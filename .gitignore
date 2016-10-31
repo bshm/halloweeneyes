@@ -1,0 +1,12 @@
+*.avi
+*.mp4
+CMakeCache.txt
+CMakeFiles
+Makefile
+cmake_install.cmake
+qteye
+qtmotion
+moc_*.cpp
+*_automoc*.cpp
+libarthurwidgets_lgpl.so
+
