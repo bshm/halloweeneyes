@@ -107,6 +107,7 @@ public:
 
 private:
 
+  bool verbose;
   bool movementSimulationEnabled;
   bool eyeIsMoving;
   qreal eyeMoveTotalTimeMs;
