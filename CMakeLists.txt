@@ -12,9 +12,6 @@ find_package(OpenCV REQUIRED )
 find_package(Qt4 REQUIRED)
 find_package(LIBVLC REQUIRED)
 
-add_executable(opencvvlctest OpenCV_VLC.cpp)
-target_link_libraries (opencvvlctest ${OpenCV_LIBS} ${VLC_LIBRARIES})
-
 include_directories(${QT_INCLUDES})
 
 add_library(arthurwidgets_lgpl SHARED arthurwidgets.cpp)
