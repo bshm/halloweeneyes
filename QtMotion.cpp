@@ -33,7 +33,7 @@ QtMotion::QtMotion(const QString& source_, const QString& dest_)
   connect(&switchToSimulationTimer, SIGNAL(timeout()), this, SLOT(switchToSimulation()));
 
   connect(QCoreApplication::instance(), SIGNAL(aboutToQuit()), this, SLOT(close()));
-  connect(&mt, SIGNAL(objectDetected(int, int)), this, SLOT(objectDetected(int, int)));
+  connect(&mt, SIGNAL(objectDetected(int,int)), this, SLOT(objectDetected(int,int)));
 
   const QDateTime now = QDateTime::currentDateTime();
   const QString timestamp = now.toString(QLatin1String("yyyyMMdd-hhmmss"));

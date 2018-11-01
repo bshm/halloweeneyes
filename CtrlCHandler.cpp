@@ -86,7 +86,7 @@ BOOL WINAPI CtrlCHandler::ctrlHandler (DWORD dwCtrlType)
 
       if (::WaitForSingleObject (CtrlCHandler::instance()->quitEvent, 0) != WAIT_OBJECT_0)
       {
-        (void) ::SetEvent (CtrlCHandler::instance()->quitEvent);
+        (void)::SetEvent (CtrlCHandler::instance()->quitEvent);
       }
       break;
 
@@ -114,7 +114,7 @@ void CtrlCHandler::signalHandler (int signal)
     case SIGTERM:
     case SIGHUP:
 
-      (void) ::write(CtrlCHandler::instance()->sigFd[0], &dummy, sizeof(dummy));
+      (void)::write(CtrlCHandler::instance()->sigFd[0], &dummy, sizeof(dummy));
 
       break;
 

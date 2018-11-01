@@ -7,11 +7,13 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
-find_package( OpenCV REQUIRED )
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}")
+find_package(OpenCV REQUIRED )
 find_package(Qt4 REQUIRED)
+find_package(LIBVLC REQUIRED)
 
-set(VLCQtCore_DIR "/opt/bshm/packages/vlcqt/lib/cmake/VLCQtCore")
-find_package(VLCQtCore REQUIRED)
+add_executable(opencvvlctest OpenCV_VLC.cpp)
+target_link_libraries (opencvvlctest ${OpenCV_LIBS} ${VLC_LIBRARIES})
 
 include_directories(${QT_INCLUDES})
 
@@ -24,4 +26,4 @@ add_executable(qteye EyeSimulation.cpp QtEye.cpp qteyemain.cpp)
 target_link_libraries (qteye Qt4::QtGui Qt4::QtCore Qt4::QtNetwork arthurwidgets_lgpl eyesimulation)
 
 add_executable(qtmotion QtMotion.cpp QtMotionTracking.cpp qtmotionmain.cpp CtrlCHandler.cpp )
-target_link_libraries (qtmotion Qt4::QtCore Qt4::QtNetwork ${OpenCV_LIBS} avformat eyesimulation)
+target_link_libraries (qtmotion Qt4::QtCore Qt4::QtNetwork ${OpenCV_LIBS} ${VLC_LIBRARIES} avformat eyesimulation)
