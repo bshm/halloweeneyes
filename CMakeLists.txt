@@ -25,5 +25,8 @@ add_library(eyesimulation STATIC EyeSimulation.cpp)
 add_executable(qteye EyeSimulation.cpp QtEye.cpp qteyemain.cpp)
 target_link_libraries (qteye Qt4::QtGui Qt4::QtCore Qt4::QtNetwork arthurwidgets_lgpl eyesimulation)
 
-add_executable(qtmotion QtMotion.cpp QtMotionTracking.cpp qtmotionmain.cpp CtrlCHandler.cpp )
-target_link_libraries (qtmotion Qt4::QtCore Qt4::QtNetwork ${OpenCV_LIBS} ${VLC_LIBRARIES} avformat eyesimulation)
+add_library(qtmotiontracking STATIC QtMotionTracking.cpp )
+target_link_libraries (qtmotiontracking ${OpenCV_LIBS} ${VLC_LIBRARIES} avformat )
+
+add_executable(qtmotion QtMotion.cpp qtmotionmain.cpp CtrlCHandler.cpp )
+target_link_libraries (qtmotion Qt4::QtCore Qt4::QtNetwork eyesimulation qtmotiontracking)

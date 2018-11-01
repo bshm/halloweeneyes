@@ -31,10 +31,12 @@
 #include "SMA.h"
 #include <cstdint>
 #include <ctime>
+#include <memory>
 #include <QString>
 #include <QDebug>
 #include <QThread>
 #include <QTimer>
+#include <vlc/vlc.h>
 
 class QtMotionTracking : public QObject
 {
@@ -51,6 +53,10 @@ public:
 
   bool searchForMovement(cv::Mat thresholdImage, cv::Mat &cameraFeed, uint32_t& x, uint32_t& y);
 
+  std::shared_ptr<libvlc_instance_t> vlcInstance;
+  std::shared_ptr<libvlc_media_player_t> vlcMediaMplayer;
+  
+  
   QThread motionTrackingThread;
   QTimer motionTrackingTimer;
 

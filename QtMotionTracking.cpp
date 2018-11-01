@@ -1,6 +1,7 @@
 /* Copyright (c) 2016 Bastian Schmitz
  * Based on code (DIYsc.cpp, surveillanceCap.cpp) written by Kyle Hounslow, March 2014
  * Based on code (motionTracking.cpp) written by Kyle Hounslow, December 2013
+ * Based on https://github.com/jrterven/OpenCV-VLC
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -22,6 +23,9 @@
  */
 
 #include "QtMotionTracking.h"
+
+#include <stdint.h>
+#include <inttypes.h>
 
 using namespace std;
 using namespace cv;
@@ -60,8 +64,46 @@ bool QtMotionTracking::open(const QString& source_, const QString& dest)
     return false;
   }
 
-  printf("#total frames: %llu\n", (uint64_t)capture.get(CV_CAP_PROP_FRAME_COUNT));
 
+  // VLC options
+  char smem_options[1000];
+
+  // RV24
+  sprintf(smem_options,
+          "#transcode{vcodec=RV24}:smem{"
+          "video-prerender-callback=%" PRId64 ","
+          "video-postrender-callback=%" PRId64 ","
+          "video-data=%" PRId64 ","
+          "no-time-sync},",
+0,0,0
+          //          , (long long int)(intptr_t)(void*)&cbVideoPrerender
+//          , (long long int)(intptr_t)(void*)&cbVideoPostrender
+//          , (long long int)(intptr_t)(void*)&dataStruct
+         );
+
+  const char* const vlc_args[] = {
+    "-I", "dummy",                        // Don't use any interface
+    "--ignore-config",                    // Don't use VLC's config
+    "--no-xlib",
+    "--no-audio",
+    "--aout=none",
+    "--extraintf=logger",                 // Log anything
+    "--verbose=1",                        // Be verbose
+    "--sout", smem_options                // Stream to memory
+  };
+
+  // Launch VLC
+  vlcInstance = std::shared_ptr<libvlc_instance_t>(libvlc_new(sizeof(vlc_args) / sizeof(vlc_args[0]), vlc_args), [=](libvlc_instance_t* instance)
+  {
+    libvlc_release (instance);
+  });
+#if 0
+  // Create a new item
+  m = libvlc_media_new_location(inst, qPrintable(source));
+
+  // Create a media player playing environement
+  mp = libvlc_media_player_new_from_media(m);
+#endif
   motionTrackingTimer.start();
 }
 
