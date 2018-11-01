@@ -47,10 +47,10 @@ void cbVideoPrerender(void* p_video_data, uint8_t** pp_pixel_buffer, int size)
   *pp_pixel_buffer = videoBuffer;
 }
 
-
-void cbVideoPostrender(void* p_video_data, uint8_t* p_pixel_buffer, int width, int height, int pixel_pitch, int size,
-                       int64_t pts)
-{ }
+void cbVideoPostrender2(void* p_video_data, uint8_t* p_pixel_buffer, int width, int height, int pixel_pitch, int size, int64_t pts)
+{
+  fprintf(stderr, "HERE2 p_video_data=% " PRId64 "\n", p_video_data);
+}
 
 
 void QtMotionTracking::handleEventMember(const libvlc_event_t* pEvt)
@@ -120,7 +120,7 @@ bool QtMotionTracking::open(const QString& source_, const QString& dest)
           "video-data=%" PRId64 ","
           "no-time-sync},",
           (long long int)(intptr_t)(void*)&cbVideoPrerender,
-          (long long int)(intptr_t)(void*)&cbVideoPostrender,
+          (long long int)(intptr_t)(void*)&cbVideoPostrender2,
           (long long int)(intptr_t)(void*)this
          );
 
@@ -131,7 +131,7 @@ bool QtMotionTracking::open(const QString& source_, const QString& dest)
     "--no-audio",
     "--aout=none",
     "--extraintf=logger",                 // Log anything
-    "--verbose=1",                        // Be verbose
+//    "--verbose=2",                        // Be verbose
     "--sout", smem_options                // Stream to memory
   };
 
