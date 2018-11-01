@@ -28,6 +28,7 @@
 
 EyeSimulation::EyeSimulation()
 {
+  verbose = false;
   state.blinkLevel = 0.0;
   state.requestUpdate = false;
   state.motionDetected = false;
@@ -64,9 +65,12 @@ void EyeSimulation::startEyeMovement()
 
   eyeMovementStart = state.lookPosLeft;
   eyeMovementDestination = QPointF(randomReal(-1.0, 1.0), randomReal(0.0, 1.0)); // don't look upwards
-  printf("eyeMovementStart=(%f,%f)\n", eyeMovementStart.x(), eyeMovementStart.y());
-  printf("eyeMovementDestination=(%f,%f)\n", eyeMovementDestination.x(), eyeMovementDestination.y());
 
+  if (verbose)
+  {
+    qDebug("eyeMovementStart=(%f,%f)\n", eyeMovementStart.x(), eyeMovementStart.y());
+    qDebug("eyeMovementDestination=(%f,%f)\n", eyeMovementDestination.x(), eyeMovementDestination.y());
+  }
   eyeIsMoving = true;
   state.requestUpdate = true;
   movementSimulationEnabled = true;
@@ -91,8 +95,11 @@ void EyeSimulation::startEyeBlinking()
   // Eyes at most half closed, not more
   eyeBlinkDestination = randomReal(0.0, 0.5);
 
-  printf("eyeBlinkStart=%f\n", eyeBlinkStart);
-  printf("eyeBlinkDestination=%f\n", eyeBlinkDestination);
+  if (verbose)
+  {
+    qDebug("eyeBlinkStart=%f\n", eyeBlinkStart);
+    qDebug("eyeBlinkDestination=%f\n", eyeBlinkDestination);
+  }
 
   eyeIsBlinking = true;
   state.requestUpdate = true;

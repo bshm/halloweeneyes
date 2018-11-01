@@ -31,10 +31,13 @@
 #include "SMA.h"
 #include <cstdint>
 #include <ctime>
+#include <memory>
 #include <QString>
 #include <QDebug>
 #include <QThread>
 #include <QTimer>
+#include <vlc/vlc.h>
+#include <queue>
 
 class QtMotionTracking : public QObject
 {
@@ -45,14 +48,18 @@ public:
   virtual ~QtMotionTracking();
 
   bool open(const QString& source_, const QString& dest);
-
+  QTimer reopenTimer;
 
   void close();
 
   bool searchForMovement(cv::Mat thresholdImage, cv::Mat &cameraFeed, uint32_t& x, uint32_t& y);
 
+  std::shared_ptr<libvlc_instance_t> vlcInstance;
+  std::shared_ptr<libvlc_media_t> vlcMedia;
+  std::shared_ptr<libvlc_media_player_t> vlcMediaMplayer;
+
+
   QThread motionTrackingThread;
-  QTimer motionTrackingTimer;
 
 //our sensitivity value to be used in the absdiff() function
   static const int SENSITIVITY_VALUE = 40;
@@ -75,6 +82,10 @@ public:
   //the two frames we will be comparing
 
   bool hasLastImage;
+
+  std::shared_ptr<cv::Mat> nextImage;
+  std::queue<std::shared_ptr<cv::Mat> > imageQueue;
+
   cv::Mat lastImage;
   cv::Mat currentImage;
   //their grayscale images (needed for absdiff() function)
@@ -99,13 +110,24 @@ public:
   double xEye;
   double yEye;
 
+
 public slots:
   bool step();
 
-
 signals:
-
+  void triggerStep();
   void objectDetected(int x, int y);
+
+private:
+  bool opening = false;
+  void handleEventMember(const libvlc_event_t* pEvt);
+
+  static void cbVideoPrerender(void* p_video_data, uint8_t** pp_pixel_buffer, int size);
+  static void cbVideoPostrender(void* p_video_data, uint8_t* p_pixel_buffer, int width, int height, int pixel_pitch,
+                                int size, int64_t pts);
+
+  void videoPrerender(uint8_t** pp_pixel_buffer, int size);
+  void videoPostRender(uint8_t* p_pixel_buffer, int width, int height, int pixel_pitch, int size, int64_t pts);
 };
 
 
