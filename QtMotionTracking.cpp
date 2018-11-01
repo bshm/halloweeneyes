@@ -32,7 +32,15 @@ using namespace cv;
 
 uint8_t* videoBuffer = 0;
 unsigned int videoBufferSize = 0;
-void cbVideoPrerender(void* p_video_data, uint8_t** pp_pixel_buffer, int size)
+
+void QtMotionTracking::cbVideoPrerender(void* p_video_data, uint8_t** pp_pixel_buffer, int size)
+{
+  fprintf(stderr, "HERE1 p_video_data=% " PRId64 "\n", p_video_data);
+  ((QtMotionTracking*)p_video_data)->videoPrerender(pp_pixel_buffer, size);
+}
+
+
+void QtMotionTracking::videoPrerender(uint8_t** pp_pixel_buffer, int size)
 {
   fprintf(stderr, "HERE1\n");
   if (size > videoBufferSize || !videoBuffer)
@@ -47,9 +55,19 @@ void cbVideoPrerender(void* p_video_data, uint8_t** pp_pixel_buffer, int size)
   *pp_pixel_buffer = videoBuffer;
 }
 
-void cbVideoPostrender2(void* p_video_data, uint8_t* p_pixel_buffer, int width, int height, int pixel_pitch, int size, int64_t pts)
+
+void QtMotionTracking::cbVideoPostrender(void* p_video_data, uint8_t* p_pixel_buffer, int width, int height,
+                                         int pixel_pitch, int size, int64_t pts)
 {
   fprintf(stderr, "HERE2 p_video_data=% " PRId64 "\n", p_video_data);
+  ((QtMotionTracking*)p_video_data)->videoPostRender(p_pixel_buffer, width, height, pixel_pitch, size, pts);
+}
+
+
+void QtMotionTracking::videoPostRender(uint8_t* p_pixel_buffer, int width, int height, int pixel_pitch, int size,
+                                       int64_t pts)
+{
+  fprintf(stderr, "HERE2\n");
 }
 
 
@@ -120,7 +138,7 @@ bool QtMotionTracking::open(const QString& source_, const QString& dest)
           "video-data=%" PRId64 ","
           "no-time-sync},",
           (long long int)(intptr_t)(void*)&cbVideoPrerender,
-          (long long int)(intptr_t)(void*)&cbVideoPostrender2,
+          (long long int)(intptr_t)(void*)&cbVideoPostrender,
           (long long int)(intptr_t)(void*)this
          );
 

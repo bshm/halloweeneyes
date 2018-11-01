@@ -117,6 +117,13 @@ signals:
 private:
   bool opening = false;
   void handleEventMember(const libvlc_event_t* pEvt);
+
+  static void cbVideoPrerender(void* p_video_data, uint8_t** pp_pixel_buffer, int size);
+  static void cbVideoPostrender(void* p_video_data, uint8_t* p_pixel_buffer, int width, int height, int pixel_pitch,
+                                int size, int64_t pts);
+
+  void videoPrerender(uint8_t** pp_pixel_buffer, int size);
+  void videoPostRender(uint8_t* p_pixel_buffer, int width, int height, int pixel_pitch, int size, int64_t pts);
 };
 
 
