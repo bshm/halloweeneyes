@@ -48,7 +48,7 @@ public:
   virtual ~QtMotionTracking();
 
   bool open(const QString& source_, const QString& dest);
-
+  QTimer reopenTimer;
 
   void close();
 
@@ -60,7 +60,6 @@ public:
 
 
   QThread motionTrackingThread;
-  QTimer motionTrackingTimer;
 
 //our sensitivity value to be used in the absdiff() function
   static const int SENSITIVITY_VALUE = 40;
@@ -83,10 +82,10 @@ public:
   //the two frames we will be comparing
 
   bool hasLastImage;
-  
+
   std::shared_ptr<cv::Mat> nextImage;
   std::queue<std::shared_ptr<cv::Mat> > imageQueue;
-  
+
   cv::Mat lastImage;
   cv::Mat currentImage;
   //their grayscale images (needed for absdiff() function)
@@ -116,7 +115,7 @@ public slots:
   bool step();
 
 signals:
-
+  void triggerStep();
   void objectDetected(int x, int y);
 
 private:

@@ -35,15 +35,12 @@ unsigned int videoBufferSize = 0;
 
 void QtMotionTracking::cbVideoPrerender(void* p_video_data, uint8_t** pp_pixel_buffer, int size)
 {
-  fprintf(stderr, "HERE1 p_video_data=% " PRId64 "\n", p_video_data);
   ((QtMotionTracking*)p_video_data)->videoPrerender(pp_pixel_buffer, size);
 }
 
 
 void QtMotionTracking::videoPrerender(uint8_t** pp_pixel_buffer, int size)
 {
-  fprintf(stderr, "HERE1\n");
-  
   nextImage = std::make_shared<cv::Mat>();
   nextImage->create(cv::Size(320, 240), CV_8UC3);
   *pp_pixel_buffer = nextImage->ptr(0, 0);
@@ -53,7 +50,6 @@ void QtMotionTracking::videoPrerender(uint8_t** pp_pixel_buffer, int size)
 void QtMotionTracking::cbVideoPostrender(void* p_video_data, uint8_t* p_pixel_buffer, int width, int height,
                                          int pixel_pitch, int size, int64_t pts)
 {
-  fprintf(stderr, "HERE2 p_video_data=% " PRId64 "\n", p_video_data);
   ((QtMotionTracking*)p_video_data)->videoPostRender(p_pixel_buffer, width, height, pixel_pitch, size, pts);
 }
 
@@ -61,13 +57,12 @@ void QtMotionTracking::cbVideoPostrender(void* p_video_data, uint8_t* p_pixel_bu
 void QtMotionTracking::videoPostRender(uint8_t* p_pixel_buffer, int width, int height, int pixel_pitch, int size,
                                        int64_t pts)
 {
-  fprintf(stderr, "HERE2\n");
-  if(nextImage)
+  if (nextImage)
   {
     imageQueue.push(nextImage);
-  }    
-  
-  
+    nextImage.reset();
+    emit triggerStep();
+  }
 }
 
 
@@ -78,12 +73,28 @@ void QtMotionTracking::handleEventMember(const libvlc_event_t* pEvt)
   {
     case libvlc_MediaPlayerTimeChanged:
       time = libvlc_media_player_get_time(vlcMediaMplayer.get());
-      printf("MediaPlayerTimeChanged %lld ms\n", (long long)time);
+      //printf("MediaPlayerTimeChanged %lld ms\n", (long long)time);
       break;
 
+    case libvlc_MediaPlayerPlaying:
+      opening = false;
+      printf("%s\n", libvlc_event_type_name(pEvt->type));
+      break;
+
+    case libvlc_MediaPlayerStopped:
     case libvlc_MediaPlayerEndReached:
-      printf("MediaPlayerEndReached\n");
-      //done = 1;
+
+      printf("%s\n", libvlc_event_type_name(pEvt->type));
+      emit triggerStep();
+      break;
+
+    case libvlc_MediaPlayerPositionChanged:
+      break;
+
+    case libvlc_MediaStateChanged:
+      printf("%s\n", libvlc_event_type_name(pEvt->type));
+      printf("state %d\n", libvlc_media_get_state       (       vlcMedia.get()  )       );
+      emit triggerStep();
       break;
 
     default:
@@ -102,11 +113,11 @@ QtMotionTracking::QtMotionTracking()
   hasLastImage = false;
   frames = 0;
 
+  reopenTimer.setInterval(5000);
+  connect(&reopenTimer, SIGNAL(timeout()), this, SLOT(step()));
+  connect(this, SIGNAL(triggerStep()), this, SLOT(step()));
 
-  motionTrackingTimer.setInterval(80); // slightly faster than 10fps
-  connect(&motionTrackingTimer, SIGNAL(timeout()), this, SLOT(step()));
   this->moveToThread(&motionTrackingThread);
-
   motionTrackingThread.start();
 }
 
@@ -124,6 +135,7 @@ bool QtMotionTracking::open(const QString& source_, const QString& dest)
   {
     qDebug("Error opening video writer.");
     return false;
+
   }
 
 
@@ -183,10 +195,15 @@ bool QtMotionTracking::open(const QString& source_, const QString& dest)
     });
   libvlc_event_attach(eventManager, libvlc_MediaPlayerTimeChanged, handleEvent, this);
   libvlc_event_attach(eventManager, libvlc_MediaPlayerEndReached, handleEvent, this);
+  libvlc_event_attach(eventManager, libvlc_MediaPlayerStopped, handleEvent, this);
+  libvlc_event_attach(eventManager, libvlc_MediaPlayerPlaying, handleEvent, this);
   libvlc_event_attach(eventManager, libvlc_MediaPlayerPositionChanged, handleEvent, this);
 
+  libvlc_event_manager_t* eventManager2 = libvlc_media_event_manager(vlcMedia.get());
+  libvlc_event_attach(eventManager2, libvlc_MediaStateChanged, handleEvent, this);
 
-  motionTrackingTimer.start();
+  reopenTimer.start();
+  triggerStep();
 }
 
 
@@ -201,26 +218,15 @@ bool QtMotionTracking::step()
   {
     //we can loop the video by re-opening the capture every time the video reaches its last frame
 
-    if (!libvlc_media_player_is_playing(vlcMediaMplayer.get()) && !opening)
+    if (!libvlc_media_player_is_playing(vlcMediaMplayer.get()) &&
+        libvlc_media_get_state        (       vlcMedia.get()  ) != libvlc_Opening)
     {
       qDebug("opening '%s'", qPrintable(source));
       opening = true;
-      libvlc_media_player_play(vlcMediaMplayer.get());
+      int play_result = libvlc_media_player_play(vlcMediaMplayer.get());
+      printf("play_result %d\n", play_result);
       hasLastImage = false;
-    }
-#if 0
-    if (!hasLastImage)
-    {
-      //read first frame
-      //if (capture.read(lastImage))
-      {
-        hasLastImage = true;
-        frames += 1;
-        //convert lastImage to gray scale for frame differencing
-        cv::resize(lastImage, lastImageSmall, smallSize, 0, 0, INTER_AREA);
-        cv::cvtColor(lastImageSmall, lastGrayImageSmall, COLOR_BGR2GRAY);
-      }
-      return false;
+
     }
 
 
@@ -228,95 +234,102 @@ bool QtMotionTracking::step()
 
 
     //copy second frame
-    if (capture.read(currentImage))
+    if (!imageQueue.empty())
     {
       frames += 1;
+      if (frames % 100 == 0)
+      {
+        printf("frame %d\n", frames);
+      }
+      currentImage = *imageQueue.front();
+      imageQueue.pop();
 
       //convert currentImage to gray scale for frame differencing
       cv::resize(currentImage, currentImageSmall, smallSize, 0, 0, INTER_AREA);
       cv::cvtColor(currentImageSmall, currentGrayImageSmall, COLOR_BGR2GRAY);
 
-
-      //perform frame differencing with the sequential images. This will output an "intensity image"
-      //do not confuse this with a threshold image, we will need to perform thresholding afterwards.
-      cv::absdiff(lastGrayImageSmall, currentGrayImageSmall, differenceImage);
-      //threshold intensity image at a given sensitivity value
-      cv::threshold(differenceImage, thresholdImage, SENSITIVITY_VALUE, 255, THRESH_BINARY);
-      if (debugMode == true)
+      if (hasLastImage)
       {
-        //show the difference image and threshold image
-        cv::imshow("Difference Image", differenceImage);
-        cv::imshow("Threshold Image", thresholdImage);
+        //perform frame differencing with the sequential images. This will output an "intensity image"
+        //do not confuse this with a threshold image, we will need to perform thresholding afterwards.
+        cv::absdiff(lastGrayImageSmall, currentGrayImageSmall, differenceImage);
+        //threshold intensity image at a given sensitivity value
+        cv::threshold(differenceImage, thresholdImage, SENSITIVITY_VALUE, 255, THRESH_BINARY);
+        if (debugMode == true)
+        {
+          //show the difference image and threshold image
+          cv::imshow("Difference Image", differenceImage);
+          cv::imshow("Threshold Image", thresholdImage);
+        }
+        else
+        {
+          //if not in debug mode, destroy the windows so we don't see them anymore
+          cv::destroyWindow("Difference Image");
+          cv::destroyWindow("Threshold Image");
+        }
+        //blur the image to get rid of the noise. This will output an intensity image
+        cv::blur(thresholdImage, thresholdImage, cv::Size(BLUR_SIZE, BLUR_SIZE));
+        //threshold again to obtain binary image from blur output
+        cv::threshold(thresholdImage, thresholdImage, SENSITIVITY_VALUE, 255, THRESH_BINARY);
+        if (debugMode == true)
+        {
+          //show the threshold image after it's been "blurred"
+
+          imshow("Final Threshold Image", thresholdImage);
+
+        }
+        else
+        {
+          //if not in debug mode, destroy the windows so we don't see them anymore
+          cv::destroyWindow("Final Threshold Image");
+        }
+
+        uint32_t x, y;
+
+        //if tracking enabled, search for contours in our thresholded image
+        if (trackingEnabled)
+        {
+          _objectDetected = searchForMovement(thresholdImage, currentImageSmall, x, y);
+        }
+        else
+        {
+          _objectDetected = false;
+        }
+
+
+        const auto end = chrono::steady_clock::now();
+        const auto diff1 = end - start1;
+        benchmarkFilter.add(chrono::duration <double, milli> (diff1).count());
+
+        const auto avg1 = benchmarkFilter.avg();
+        const auto fps1 = 1.0/(avg1/1000.0);
+
+        if (_objectDetected)
+        {
+          objectDetectedCount += 1;
+
+          printf("frames:%d, odc=%u, BM1: %4.2lfms, %3.2lffps, x=%d y=%d\n",
+                 frames, objectDetectedCount, avg1, fps1, x, y);
+
+          emit objectDetected(x, y);
+        }
+
+        //show our captured frame
+        if (_objectDetected)
+        {
+          //imshow("Input Image", currentImageSmall);
+          oVideoWriter.write(currentImageSmall);
+        }
+
       }
-      else
-      {
-        //if not in debug mode, destroy the windows so we don't see them anymore
-        cv::destroyWindow("Difference Image");
-        cv::destroyWindow("Threshold Image");
-      }
-      //blur the image to get rid of the noise. This will output an intensity image
-      cv::blur(thresholdImage, thresholdImage, cv::Size(BLUR_SIZE, BLUR_SIZE));
-      //threshold again to obtain binary image from blur output
-      cv::threshold(thresholdImage, thresholdImage, SENSITIVITY_VALUE, 255, THRESH_BINARY);
-      if (debugMode == true)
-      {
-        //show the threshold image after it's been "blurred"
-
-        imshow("Final Threshold Image", thresholdImage);
-
-      }
-      else
-      {
-        //if not in debug mode, destroy the windows so we don't see them anymore
-        cv::destroyWindow("Final Threshold Image");
-      }
-
-      uint32_t x, y;
-
-      //if tracking enabled, search for contours in our thresholded image
-      if (trackingEnabled)
-      {
-        _objectDetected = searchForMovement(thresholdImage, currentImageSmall, x, y);
-      }
-      else
-      {
-        _objectDetected = false;
-      }
-
-
-      const auto end = chrono::steady_clock::now();
-      const auto diff1 = end - start1;
-      benchmarkFilter.add(chrono::duration <double, milli> (diff1).count());
-
-      const auto avg1 = benchmarkFilter.avg();
-      const auto fps1 = 1.0/(avg1/1000.0);
-
-      if (_objectDetected)
-      {
-        objectDetectedCount += 1;
-
-        printf("frames:%d, odc=%u, BM1: %4.2lfms, %3.2lffps, x=%d y=%d\n",
-               frames, objectDetectedCount, avg1, fps1, x, y);
-
-        emit objectDetected(x, y);
-      }
-
-      //show our captured frame
-      if (_objectDetected)
-      {
-        //imshow("Input Image", currentImageSmall);
-        oVideoWriter.write(currentImageSmall);
-      }
-
-
       lastGrayImageSmall = currentGrayImageSmall.clone();
+      hasLastImage = true;
     }
     else
     {
-      printf("capture returned no image\n");
-      capture.release();
+      printf("queue was empty\n");
+
     }
-#endif
   }
   catch (const cv::Exception& e)
   {
@@ -329,11 +342,10 @@ bool QtMotionTracking::step()
 
 void QtMotionTracking::close()
 {
-  motionTrackingTimer.stop();
+  reopenTimer.stop();
   qDebug("QtMotionTracking::close()");
   motionTrackingThread.quit();
   motionTrackingThread.wait(5000);
-  //capture.release();
 }
 
 
