@@ -43,16 +43,10 @@ void QtMotionTracking::cbVideoPrerender(void* p_video_data, uint8_t** pp_pixel_b
 void QtMotionTracking::videoPrerender(uint8_t** pp_pixel_buffer, int size)
 {
   fprintf(stderr, "HERE1\n");
-  if (size > videoBufferSize || !videoBuffer)
-  {
-    printf("Reallocate raw video buffer %d bytes\n", size);
-    free(videoBuffer);
-    videoBuffer = (uint8_t*)malloc(size);
-    videoBufferSize = size;
-  }
-
-  // videoBuffer = (uint8_t *)malloc(size);
-  *pp_pixel_buffer = videoBuffer;
+  
+  nextImage = std::make_shared<cv::Mat>();
+  nextImage->create(cv::Size(320, 240), CV_8UC3);
+  *pp_pixel_buffer = nextImage->ptr(0, 0);
 }
 
 
@@ -68,6 +62,12 @@ void QtMotionTracking::videoPostRender(uint8_t* p_pixel_buffer, int width, int h
                                        int64_t pts)
 {
   fprintf(stderr, "HERE2\n");
+  if(nextImage)
+  {
+    imageQueue.push(nextImage);
+  }    
+  
+  
 }
 
 

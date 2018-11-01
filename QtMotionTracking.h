@@ -37,6 +37,7 @@
 #include <QThread>
 #include <QTimer>
 #include <vlc/vlc.h>
+#include <queue>
 
 class QtMotionTracking : public QObject
 {
@@ -82,6 +83,10 @@ public:
   //the two frames we will be comparing
 
   bool hasLastImage;
+  
+  std::shared_ptr<cv::Mat> nextImage;
+  std::queue<std::shared_ptr<cv::Mat> > imageQueue;
+  
   cv::Mat lastImage;
   cv::Mat currentImage;
   //their grayscale images (needed for absdiff() function)
