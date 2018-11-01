@@ -56,8 +56,8 @@ public:
   std::shared_ptr<libvlc_instance_t> vlcInstance;
   std::shared_ptr<libvlc_media_t> vlcMedia;
   std::shared_ptr<libvlc_media_player_t> vlcMediaMplayer;
-  
-  
+
+
   QThread motionTrackingThread;
   QTimer motionTrackingTimer;
 
@@ -106,13 +106,17 @@ public:
   double xEye;
   double yEye;
 
+
 public slots:
   bool step();
-
 
 signals:
 
   void objectDetected(int x, int y);
+
+private:
+  bool opening = false;
+  void handleEventMember(const libvlc_event_t* pEvt);
 };
 
 
