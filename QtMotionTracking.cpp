@@ -93,17 +93,21 @@ bool QtMotionTracking::open(const QString& source_, const QString& dest)
   };
 
   // Launch VLC
-  vlcInstance = std::shared_ptr<libvlc_instance_t>(libvlc_new(sizeof(vlc_args) / sizeof(vlc_args[0]), vlc_args), [=](libvlc_instance_t* instance)
+  vlcInstance = std::shared_ptr<libvlc_instance_t>(libvlc_new(sizeof(vlc_args) / sizeof(vlc_args[0]), vlc_args), [=](libvlc_instance_t* ptr)
   {
-    libvlc_release (instance);
+    libvlc_release(ptr);
   });
-#if 0
-  // Create a new item
-  m = libvlc_media_new_location(inst, qPrintable(source));
-
-  // Create a media player playing environement
-  mp = libvlc_media_player_new_from_media(m);
-#endif
+  
+  vlcMedia = std::shared_ptr<libvlc_media_t>(libvlc_media_new_location(vlcInstance.get(), qPrintable(source)),[=](libvlc_media_t* ptr)
+  {
+    libvlc_media_release(ptr);
+  });
+  
+  vlcMediaMplayer = std::shared_ptr<libvlc_media_player_t>(libvlc_media_player_new_from_media(vlcMedia.get()),[=](libvlc_media_player_t* ptr)
+  {
+    libvlc_media_player_release(ptr);
+  });
+  
   motionTrackingTimer.start();
 }
 

@@ -54,6 +54,7 @@ public:
   bool searchForMovement(cv::Mat thresholdImage, cv::Mat &cameraFeed, uint32_t& x, uint32_t& y);
 
   std::shared_ptr<libvlc_instance_t> vlcInstance;
+  std::shared_ptr<libvlc_media_t> vlcMedia;
   std::shared_ptr<libvlc_media_player_t> vlcMediaMplayer;
   
   
