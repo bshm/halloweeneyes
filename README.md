@@ -1,6 +1,7 @@
 # halloweeneyes
 
 [![Build Status](https://www.travis-ci.com/bshm/halloweeneyes.svg?branch=master)](https://www.travis-ci.com/bshm/halloweeneyes)
+[![Sonarcloud](https://sonarcloud.io/api/project_badges/measure?project=bshm_halloweeneyes&metric=alert_status)]
 [![BCH compliance](https://bettercodehub.com/edge/badge/bshm/halloweeneyes?branch=master)](https://bettercodehub.com/)
 
 
@@ -15,13 +16,14 @@ follow people moving in front of the house
 ## Architecture
 
 The components are
+- Two windows to project on
 - IP RTSP camera (e.g. AVTECH AVN812)
 - motion detection software (qtmotion)
 - eye rendering software (qteye)
 - 2 single board computers with HDMI connector (Raspberry Pi or Beaglebone Black)
 - 2 LED beamers used for projection
 
-The qtmotion software obtains an RTSP video stream from the camera and tries to detect motion in successive vide frames.
+The qtmotion software obtains an RTSP video stream from the camera and tries to detect motion in successive video frames.
 It also contains an EyeSimulation that generates eye movement and lid movement if no motion is detected.
 qtmotion broadcasts the eye movement data using UDP multicast to all running qteye instances in the local ethernet.
 qteye picks up this data and renders the eye accoringly.
