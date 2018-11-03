@@ -1,8 +1,9 @@
 language: cpp
 compiler: gcc
 script:
-  - cmake -G Ninja
-  - ninja
+  - cmake .
+  - build-wrapper-linux-x86-64 --out-dir bw-output make clean all
+  - sonar-scanner -Dsonar.projectKey=bshm_halloweeneyes -Dsonar.organization=bshm-github -Dsonar.sources=. -Dsonar.cfamily.build-wrapper-output=bw-output -Dsonar.host.url=https://sonarcloud.io
 
 addons:
   apt:
@@ -11,3 +12,5 @@ addons:
     - libopencv-dev 
     - libqt4-private-dev
     - ninja-build
+  sonarcloud:
+    organization: "bshm-github"
