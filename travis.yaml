@@ -1,4 +1,5 @@
 language: cpp
 compiler: gcc
 script:
-  - cmake --version
+  - cmake .
+  - make
