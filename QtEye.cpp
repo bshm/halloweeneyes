@@ -195,13 +195,6 @@ void QtEyeView::paint(QPainter* painter)
     lowerLidMovement = QPointF(0, -125);
   }
 
-
-//    QPointF translation = lookPos * irisMoveFactor;
-//    QTransform t = QTransform().translate( translation.x(), translation.y());
-//    const QImage lensIrisImage = lensImage( m_irisPixmap.toImage().transformed(t), irisCenter);
-//    painter->drawPixmap(imageOffset , QPixmap::fromImage(lensIrisImage));
-
-
   const QPointF imageTranslation = -irisCenter + center;
   const QPointF irisLookTranslation =  imageTranslation + QPointF(
     lookPosTransformed.x() * irisMoveFactor.x(), lookPosTransformed.y() * irisMoveFactor.y());
@@ -263,41 +256,6 @@ void QtEyeView::wheelEvent(QWheelEvent* e)
 void QtEyeView::reset()
 {
   update();
-}
-
-
-QImage lensImage(const QImage& image, QPointF lensCenter)
-{
-  const qreal imgWidth = image.width();
-  const qreal imgHeight = image.height();
-  const qreal halfWidth = imgWidth / 2.0;
-  const qreal halfHeight = imgHeight / 2.0;
-  const qreal m_radius = 200.0;
-  const qreal m_radius_2 = m_radius*m_radius;
-  static qreal flip = -1;
-
-  QImage dest(image);
-
-  for (qreal y = 0; y < imgHeight; y++)
-  {
-    for (qreal x = 0; x < imgWidth; x++)
-    {
-      const qreal dx = x - lensCenter.x();
-      const qreal dy = y - lensCenter.y();
-      const qreal len_2 = m_radius_2 - (dx * dx + dy * dy);
-      if (len_2 > 0)
-      {
-        const qreal len = m_radius - qSqrt(dx * dx + dy * dy);
-        dest.setPixel(x, y,
-                      image.pixel(x + flip * dx * len / m_radius,
-                                  y + flip * dy * len / m_radius));
-      }
-    }
-
-
-  }
-
-  return dest;
 }
 
 
