@@ -1,4 +1,7 @@
 # halloweeneyes
+
+[![Build Status](https://www.travis-ci.com/bshm/halloweeneyes.svg?branch=master)](https://www.travis-ci.com/bshm/halloweeneyes)
+
 Code for projecting moving eyes to windows
 
 This is code to project scary looking moving eyes to the inside of windows.
