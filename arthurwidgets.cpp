@@ -229,3 +229,4 @@ void ArthurFrame::resizeEvent(QResizeEvent* e)
 #endif
   QWidget::resizeEvent(e);
 }
+

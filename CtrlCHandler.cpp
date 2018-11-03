@@ -251,3 +251,4 @@ void CtrlCHandler::requestProcessTermination(qint64 applicationPid)
   socket.connectToServer(QString::fromLatin1("PID%1").arg(applicationPid), QIODevice::WriteOnly);
   socket.close();
 }
+

@@ -412,3 +412,4 @@ bool QtMotionTracking::searchForMovement(cv::Mat thresholdImage, cv::Mat &camera
 
   return objectDetected;
 }
+
