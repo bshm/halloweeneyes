@@ -1,7 +1,7 @@
 # halloweeneyes
 
 [![Build Status](https://www.travis-ci.com/bshm/halloweeneyes.svg?branch=master)](https://www.travis-ci.com/bshm/halloweeneyes)
-[![Sonarcloud](https://sonarcloud.io/api/project_badges/measure?project=bshm_halloweeneyes&metric=alert_status)]
+[![Sonarcloud](https://sonarcloud.io/api/project_badges/measure?project=bshm_halloweeneyes&metric=alert_status)](https://sonarcloud.io/component_measures?id=bshm_halloweeneyes)
 [![BCH compliance](https://bettercodehub.com/edge/badge/bshm/halloweeneyes?branch=master)](https://bettercodehub.com/)
 
 
