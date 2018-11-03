@@ -192,3 +192,4 @@ void EyeSimulation::simulationStep()
   }
   state.requestUpdate = true;
 }
+

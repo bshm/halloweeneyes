@@ -105,3 +105,4 @@ void QtMotion::objectDetected(int x, int y)
   }
   udpSocket.writeDatagram(buffer, groupAddress, 45454);
 }
+
