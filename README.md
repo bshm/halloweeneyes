@@ -1,6 +1,8 @@
 # halloweeneyes
 
 [![Build Status](https://www.travis-ci.com/bshm/halloweeneyes.svg?branch=master)](https://www.travis-ci.com/bshm/halloweeneyes)
+[![BCH compliance](https://bettercodehub.com/edge/badge/bshm/halloweeneyes?branch=master)](https://bettercodehub.com/)
+
 
 Code for projecting moving eyes to windows
 
