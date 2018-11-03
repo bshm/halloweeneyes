@@ -159,3 +159,4 @@ inline QDataStream& operator>>(QDataStream &in, EyeSimulation::State& s)
 
 
 #endif
+
