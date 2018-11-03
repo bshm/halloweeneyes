@@ -10,4 +10,4 @@ addons:
     - libvlc-dev 
     - libopencv-dev 
     - libqt4-private-dev
-    - ninja
+    - ninja-build
