@@ -3,3 +3,9 @@ compiler: gcc
 script:
   - cmake .
   - make
+
+before_install:
+  - sudo apt-get install -y libvlc-dev libopencv-dev
+addons:
+  apt:
+    update: true
