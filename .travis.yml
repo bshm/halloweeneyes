@@ -5,7 +5,4 @@ script:
   - make
 
 before_install:
-  - sudo apt-get install -y libvlc-dev libopencv-dev
-addons:
-  apt:
-    update: true
+  - sudo apt-get install -y libvlc-dev libopencv-dev libqt4-private-dev
