@@ -21,6 +21,8 @@
 
 #include "QtMotion.h"
 
+int unused;
+
 QtMotion::QtMotion(const QString& source_, const QString& dest_)
 {
   groupAddress = QHostAddress("239.255.43.21");
