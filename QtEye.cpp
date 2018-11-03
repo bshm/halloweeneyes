@@ -28,6 +28,7 @@
 
 #include "QtEye.h"
 
+int* unused = new int;
 
 QtEyeView::QtEyeView(QWidget* parent, bool leftEye_, bool rotated_, const QString& iris)
   : ArthurFrame(parent),
