@@ -1,0 +1,13 @@
+language: cpp
+compiler: gcc
+script:
+  - cmake -G Ninja
+  - ninja
+
+addons:
+  apt:
+    packages:
+    - libvlc-dev 
+    - libopencv-dev 
+    - libqt4-private-dev
+    - ninja-build

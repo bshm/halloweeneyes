@@ -22,6 +22,10 @@
  * THE SOFTWARE.
  */
 
+// TODO
+// rewrite using https://stackoverflow.com/a/32826441
+// measure latency
+
 #include "QtMotionTracking.h"
 
 #include <stdint.h>
@@ -346,6 +350,11 @@ void QtMotionTracking::close()
   qDebug("QtMotionTracking::close()");
   motionTrackingThread.quit();
   motionTrackingThread.wait(5000);
+
+  if (oVideoWriter.isOpened())
+  {
+    oVideoWriter.release();
+  }
 }
 
 
