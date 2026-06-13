@@ -11,6 +11,9 @@
 //!
 //! When no motion is detected for [`CaptureConfig::simulation_timeout`] the
 //! simulation resumes autonomous animation.
+//!
+//! Pass `rtsp_url = None` to skip the camera entirely and run the
+//! simulation at ~30 fps with no camera dependency.
 
 use crate::{coordinate::CoordinateMapConfig, motion::MotionConfig, simulation::EyeSimulation};
 use anyhow::{Context, Result};
@@ -23,9 +26,12 @@ use tokio::process::Command;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
+/// Target tick interval for simulation-only mode (~30 fps).
+const SIM_TICK_INTERVAL: Duration = Duration::from_millis(33);
+
 pub struct CaptureConfig {
-    /// RTSP source URL understood by ffmpeg.
-    pub rtsp_url: String,
+    /// RTSP source URL understood by ffmpeg. `None` = simulation-only mode.
+    pub rtsp_url: Option<String>,
     /// Capture width (must match motion pipeline expectation).
     pub width: u32,
     /// Capture height.
@@ -37,7 +43,7 @@ pub struct CaptureConfig {
 }
 
 impl CaptureConfig {
-    pub fn new(rtsp_url: String) -> Self {
+    pub fn new(rtsp_url: Option<String>) -> Self {
         Self {
             rtsp_url,
             width: 320,
@@ -49,14 +55,46 @@ impl CaptureConfig {
     }
 }
 
-/// Spawns the capture + detection loop.  Broadcasts [`EyeState`] on `tx`.
-/// `sim_tx` shares the same channel — kept separate to allow future split.
+/// Advance the simulation by one step and produce an [`EyeState`].
+/// Extracted as a standalone function so it is testable without I/O.
+pub fn simulation_tick(sim: &mut EyeSimulation<impl rand::Rng>, now: Instant) -> EyeState {
+    sim.tick(now)
+}
+
+/// Runs the capture + detection loop, or a pure simulation loop when
+/// `rtsp_url` is `None`.  Broadcasts [`EyeState`] on `tx`.
 pub async fn run(
-    rtsp_url: String,
+    rtsp_url: Option<String>,
     tx: Arc<broadcast::Sender<EyeState>>,
-    _sim_tx: Arc<broadcast::Sender<EyeState>>,
 ) -> Result<()> {
     let cfg = CaptureConfig::new(rtsp_url);
+    match &cfg.rtsp_url {
+        None => run_simulation_only(cfg, tx).await,
+        Some(_) => run_camera(cfg, tx).await,
+    }
+}
+
+/// Simulation-only loop: ticks at ~30 fps, no camera required.
+async fn run_simulation_only(
+    _cfg: CaptureConfig,
+    tx: Arc<broadcast::Sender<EyeState>>,
+) -> Result<()> {
+    info!("no camera configured — running in simulation-only mode");
+    let mut sim = EyeSimulation::new(crate::simulation::SimConfig::default());
+    let mut interval = tokio::time::interval(SIM_TICK_INTERVAL);
+    loop {
+        interval.tick().await;
+        let state = simulation_tick(&mut sim, Instant::now());
+        let _ = tx.send(state);
+    }
+}
+
+/// Camera + motion-detection loop backed by an ffmpeg subprocess.
+async fn run_camera(
+    cfg: CaptureConfig,
+    tx: Arc<broadcast::Sender<EyeState>>,
+) -> Result<()> {
+    let rtsp_url = cfg.rtsp_url.as_deref().unwrap();
     let mut sim = EyeSimulation::new(crate::simulation::SimConfig::default());
     let frame_bytes = (cfg.width * cfg.height * 3) as usize;
     let mut prev_gray: Option<GrayImage> = None;
@@ -65,13 +103,13 @@ pub async fn run(
         .unwrap_or(Instant::now());
 
     loop {
-        info!("opening RTSP stream: {}", cfg.rtsp_url);
+        info!("opening RTSP stream: {}", rtsp_url);
 
         let mut child = Command::new("ffmpeg")
             .args([
                 "-loglevel", "error",
                 "-rtsp_transport", "tcp",
-                "-i", &cfg.rtsp_url,
+                "-i", rtsp_url,
                 "-vf", &format!("scale={}:{}", cfg.width, cfg.height),
                 "-f", "rawvideo",
                 "-pix_fmt", "rgb24",
@@ -107,7 +145,8 @@ pub async fn run(
                             &cfg.coordinate,
                         );
                         sim.set_look(ex, ey);
-                        debug!("motion at ({:.2},{:.2}) → eye ({ex:.3},{ey:.3})", result.centroid_x, result.centroid_y);
+                        debug!("motion at ({:.2},{:.2}) → eye ({ex:.3},{ey:.3})",
+                            result.centroid_x, result.centroid_y);
                         EyeState {
                             look_x: ex,
                             look_y: ey,
@@ -116,11 +155,8 @@ pub async fn run(
                         }
                     }
                     None => {
-                        if now.duration_since(last_motion) >= cfg.simulation_timeout {
-                            sim.tick(now)
-                        } else {
-                            sim.tick(now)
-                        }
+                        let _ = last_motion; // suppress unused-variable warning when no motion
+                        sim.tick(now)
                     }
                 }
             } else {
@@ -128,7 +164,7 @@ pub async fn run(
             };
 
             prev_gray = Some(gray);
-            let _ = tx.send(state); // ignore RecvError if no subscribers yet
+            let _ = tx.send(state);
         }
 
         let _ = child.kill().await;
@@ -194,5 +230,37 @@ mod tests {
         let buf = vec![0u8; 8 * 6 * 3];
         let img = rgb24_to_gray(&buf, 8, 6);
         assert_eq!(img.dimensions(), (8, 6));
+    }
+
+    // --- CaptureConfig ---
+
+    #[test]
+    fn capture_config_none_is_simulation_only() {
+        let cfg = CaptureConfig::new(None);
+        assert!(cfg.rtsp_url.is_none());
+    }
+
+    #[test]
+    fn capture_config_some_stores_url() {
+        let cfg = CaptureConfig::new(Some("rtsp://camera/live".to_string()));
+        assert_eq!(cfg.rtsp_url.as_deref(), Some("rtsp://camera/live"));
+    }
+
+    // --- simulation_tick ---
+
+    #[test]
+    fn simulation_tick_output_in_range() {
+        use rand::rngs::StdRng;
+        use rand::SeedableRng;
+        let rng = StdRng::seed_from_u64(1);
+        let mut sim = crate::simulation::EyeSimulation::with_rng(
+            crate::simulation::SimConfig::default(),
+            rng,
+        );
+        let state = simulation_tick(&mut sim, Instant::now());
+        assert!(state.look_x >= -1.0 && state.look_x <= 1.0);
+        assert!(state.look_y >= -1.0 && state.look_y <= 1.0);
+        assert!(state.blink_level >= 0.0 && state.blink_level <= 1.0);
+        assert!(!state.motion_detected);
     }
 }

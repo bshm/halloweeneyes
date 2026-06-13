@@ -69,12 +69,17 @@ output: `crates/frontend/dist/`
 ### start the detector
 
 ```sh
-./target/release/detector <rtsp-url> <bind-addr>
+./target/release/detector <bind-addr> [rtsp-url]
 ```
 
-example:
+with camera:
 ```sh
-./target/release/detector rtsp://admin:admin@192.168.1.33/live/h264 0.0.0.0:8080
+./target/release/detector 0.0.0.0:8080 rtsp://admin:admin@192.168.1.33/live/h264
+```
+
+simulation-only (no camera required):
+```sh
+./target/release/detector 0.0.0.0:8080
 ```
 
 the detector:
@@ -93,8 +98,8 @@ browser tab receives the same eye state from the websocket broadcast.
 ### development mode (frontend hot-reload)
 
 ```sh
-# terminal 1 — run detector against a test stream or file
-./target/release/detector rtsp://camera/live 0.0.0.0:8080
+# terminal 1 — run detector in simulation-only mode (or pass rtsp-url as second arg)
+./target/release/detector 0.0.0.0:8080
 
 # terminal 2 — trunk dev server with hot-reload
 cd crates/frontend
