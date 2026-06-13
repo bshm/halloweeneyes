@@ -86,7 +86,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let tex_size = 2000.0;
 
     // Raw U coordinates before mirroring
-    let iris_u_raw  = (cx - iris_tx)  / tex_size;
+    let iris_scale  = 0.65;  // scale iris to 65% of original size
+    let iris_center = 998.0 / tex_size;  // irisCenter in UV space
+    let iris_u_raw  = iris_center + (((cx - iris_tx) / tex_size) - iris_center) / iris_scale;
+    let iris_v_raw  = iris_center + (((cy - iris_ty) / tex_size) - iris_center) / iris_scale;
     let bg_u_raw    = (cx - bg_tx)    / tex_size;
     let upper_u_raw = (cx - upper_tx) / tex_size;
     let lower_u_raw = (cx - lower_tx) / tex_size;
@@ -94,7 +97,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Qt mirrors the textures around irisCenter for the right eye.
     // Replicate by flipping U when mirror = -1.
     let flip = u.mirror < 0.0;
-    let iris_uv  = vec2<f32>(select(iris_u_raw,  1.0 - iris_u_raw,  flip), (cy - iris_ty)  / tex_size);
+    let iris_uv  = vec2<f32>(select(iris_u_raw, 1.0 - iris_u_raw, flip), iris_v_raw);
     let bg_uv    = vec2<f32>(select(bg_u_raw,    1.0 - bg_u_raw,    flip), (cy - bg_ty)    / tex_size);
     let upper_uv = vec2<f32>(select(upper_u_raw, 1.0 - upper_u_raw, flip), (cy - upper_ty) / tex_size);
     let lower_uv = vec2<f32>(select(lower_u_raw, 1.0 - lower_u_raw, flip), (cy - lower_ty) / tex_size);

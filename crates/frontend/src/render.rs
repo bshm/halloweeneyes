@@ -114,13 +114,13 @@ pub async fn init_renderer(canvas: web_sys::HtmlCanvasElement, mirror: f32) -> R
     let height = canvas.height();
     log!("init_renderer start: canvas {}x{}", width, height);
 
-    log!("fetching BG.png ...");
-    let bg_bytes = fetch_bytes("/public/BG.png").await?;
+    log!("fetching BG2.png ...");
+    let bg_bytes = fetch_bytes("/public/BG2.png").await?;
     let (bg_w, bg_h, bg_data) = decode_rgba(&bg_bytes)?;
-    log!("BG.png decoded: {}x{}", bg_w, bg_h);
+    log!("BG2.png decoded: {}x{}", bg_w, bg_h);
 
-    log!("fetching IRIS.png ...");
-    let iris_bytes = fetch_bytes("/public/IRIS.png").await?;
+    log!("fetching IRIS2.png ...");
+    let iris_bytes = fetch_bytes("/public/IRIS2.png").await?;
     let (iris_w, iris_h, iris_data) = decode_rgba(&iris_bytes)?;
     log!("IRIS.png decoded: {}x{}", iris_w, iris_h);
 
