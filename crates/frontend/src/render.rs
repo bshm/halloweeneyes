@@ -42,18 +42,27 @@ pub fn update_eye_state(state: EyeState) {
     STATE_DIRTY.with(|d| d.set(true));
 }
 
+macro_rules! log {
+    ($($arg:tt)*) => {
+        crate::diagnostics::log_remote(&format!("[eye-renderer] {}", format!($($arg)*)))
+    };
+}
+
 /// Initialises the wgpu renderer and starts the rAF animation loop.
 pub async fn init_renderer(canvas: web_sys::HtmlCanvasElement) -> Result<()> {
     let width = canvas.width();
     let height = canvas.height();
+    log!("init_renderer start: canvas {}x{}", width, height);
 
     // Default instance selects WebGL2 on WASM (with the `webgl` feature).
     let instance = wgpu::Instance::default();
+    log!("instance created");
 
     // Safe canvas surface creation — requires `webgl` feature in wgpu.
     let surface: wgpu::Surface<'static> = instance
         .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
         .map_err(|e| anyhow!("create_surface: {e}"))?;
+    log!("surface created");
 
     // wgpu 29: request_adapter returns Result<Adapter, RequestAdapterError>
     let adapter = instance
@@ -64,13 +73,29 @@ pub async fn init_renderer(canvas: web_sys::HtmlCanvasElement) -> Result<()> {
         })
         .await
         .map_err(|e| anyhow!("request_adapter: {e}"))?;
+    log!("adapter: {:?}", adapter.get_info());
 
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor::default())
         .await
         .map_err(|e| anyhow!("request_device: {e}"))?;
+    log!("device created");
 
-    let surface_format = wgpu::TextureFormat::Rgba8Unorm;
+    // Ask the surface which texture formats it supports, pick the first.
+    let caps = surface.get_capabilities(&adapter);
+    log!("surface formats: {:?}", caps.formats);
+    log!("surface alpha modes: {:?}", caps.alpha_modes);
+    let surface_format = caps.formats.first()
+        .copied()
+        .ok_or_else(|| anyhow!("no supported surface format"))?;
+    log!("using surface format: {:?}", surface_format);
+
+    let alpha_mode = if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque) {
+        wgpu::CompositeAlphaMode::Opaque
+    } else {
+        caps.alpha_modes.first().copied().unwrap_or(wgpu::CompositeAlphaMode::Auto)
+    };
+
     surface.configure(
         &device,
         &wgpu::SurfaceConfiguration {
@@ -79,11 +104,12 @@ pub async fn init_renderer(canvas: web_sys::HtmlCanvasElement) -> Result<()> {
             width,
             height,
             present_mode: wgpu::PresentMode::AutoVsync,
-            alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+            alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         },
     );
+    log!("surface configured");
 
     let shader_src = include_str!("eye.wgsl");
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -160,7 +186,9 @@ pub async fn init_renderer(canvas: web_sys::HtmlCanvasElement) -> Result<()> {
         cache: None,
     });
 
+    log!("pipeline created");
     start_render_loop(device, queue, surface, pipeline, bind_group, uniform_buffer);
+    log!("render loop started — waiting for eye state updates");
 
     Ok(())
 }
@@ -186,10 +214,20 @@ fn start_render_loop(
     let f: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
     let g = f.clone();
 
+    // Frame counter for throttled logging
+    let frame_count = Rc::new(Cell::new(0u64));
+
     *g.borrow_mut() = Some(Closure::new(move || {
         let dirty = STATE_DIRTY.with(|d| d.replace(false));
         if dirty {
             let eye = CURRENT_STATE.with(|s| *s.borrow());
+            let n = frame_count.get();
+            frame_count.set(n + 1);
+            // Log every 60th rendered frame (~2 s at 30 fps)
+            if n % 60 == 0 {
+                log!("frame {} — eye state: look=({:.2},{:.2}) blink={:.2} motion={}",
+                    n, eye.look_x, eye.look_y, eye.blink_level, eye.motion_detected);
+            }
             let mut guard = state.borrow_mut();
             let (device, queue, surface, pipeline, bind_group, uniform_buffer) = &mut *guard;
             render_frame(device, queue, surface, pipeline, bind_group, uniform_buffer, &eye);
@@ -226,9 +264,15 @@ fn render_frame(
 
     // wgpu 29: CurrentSurfaceTexture is an enum with Success/Suboptimal/error variants
     let frame = match surface.get_current_texture() {
-        wgpu::CurrentSurfaceTexture::Success(t)
-        | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-        _ => return,
+        wgpu::CurrentSurfaceTexture::Success(t) => t,
+        wgpu::CurrentSurfaceTexture::Suboptimal(t) => {
+            log!("get_current_texture: suboptimal");
+            t
+        }
+        err => {
+            log!("get_current_texture error: {:?}", err);
+            return;
+        }
     };
     let view = frame
         .texture

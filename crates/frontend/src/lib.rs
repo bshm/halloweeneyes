@@ -12,6 +12,7 @@
 //! A native channel-based implementation can be plugged in for Tauri without
 //! touching the rendering code.
 
+mod diagnostics;
 mod render;
 mod transport;
 
@@ -20,8 +21,16 @@ use shared::EyeState;
 use transport::{EyeStateSource, WebSocketSource};
 use wasm_bindgen::JsCast;
 
+macro_rules! log {
+    ($($arg:tt)*) => {
+        crate::diagnostics::log_remote(&format!("[eye-app] {}", format!($($arg)*)))
+    };
+}
+
+#[wasm_bindgen::prelude::wasm_bindgen(start)]
 pub fn main() {
     console_error_panic_hook::set_once();
+    log!("app starting");
     mount_to_body(App);
 }
 
@@ -38,7 +47,10 @@ fn App() -> impl IntoView {
         format!("ws://{host}/ws")
     };
 
-    let _source = WebSocketSource::connect(ws_url, set_eye_state);
+    // Connect to the eye state WebSocket.
+    // mem::forget keeps the WebSocketSource (and its JS closures) alive for the
+    // application lifetime — WASM is single-threaded, there is no cleanup path.
+    std::mem::forget(WebSocketSource::connect(ws_url, set_eye_state));
 
     view! {
         <EyeCanvas eye_state=eye_state />
@@ -54,12 +66,16 @@ fn EyeCanvas(eye_state: ReadSignal<EyeState>) -> impl IntoView {
     // Initialise the wgpu renderer once the canvas is mounted
     Effect::new(move |_| {
         if let Some(canvas) = canvas_ref.get() {
+            log!("canvas element found — starting renderer");
             let html_canvas = canvas.unchecked_into::<web_sys::HtmlCanvasElement>();
             wasm_bindgen_futures::spawn_local(async move {
-                if let Err(e) = render::init_renderer(html_canvas).await {
-                    web_sys::console::error_1(&format!("renderer init failed: {e}").into());
+                match render::init_renderer(html_canvas).await {
+                    Ok(()) => log!("renderer init OK"),
+                    Err(e) => crate::diagnostics::log_remote(&format!("[eye-app] renderer init FAILED: {e}")),
                 }
             });
+        } else {
+            log!("canvas_ref not yet mounted");
         }
     });
 

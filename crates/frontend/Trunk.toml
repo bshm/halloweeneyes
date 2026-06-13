@@ -5,3 +5,10 @@ public_url = "/"
 
 [watch]
 ignore = ["dist"]
+
+# Dev-mode proxies — forward WebSocket and diagnostic log endpoint to the detector
+[[proxy]]
+backend = "ws://localhost:8080/ws"
+
+[[proxy]]
+backend = "http://localhost:8080/log"

@@ -9,6 +9,17 @@ use shared::{EyeState, ServerMessage};
 use wasm_bindgen::prelude::*;
 use web_sys::{CloseEvent, ErrorEvent, MessageEvent, WebSocket};
 
+macro_rules! log {
+    ($($arg:tt)*) => {
+        crate::diagnostics::log_remote(&format!("[eye-transport] {}", format!($($arg)*)))
+    };
+}
+macro_rules! err {
+    ($($arg:tt)*) => {
+        crate::diagnostics::log_remote(&format!("[eye-transport][ERR] {}", format!($($arg)*)))
+    };
+}
+
 /// Abstraction over the source of eye-state updates.
 ///
 /// Implementations must keep themselves alive (e.g. by holding event listener
@@ -32,22 +43,38 @@ pub struct WebSocketSource {
 
 impl EyeStateSource for WebSocketSource {
     fn connect(url: String, sink: WriteSignal<EyeState>) -> Self {
+        log!("connecting to {}", url);
         let socket = WebSocket::new(&url).expect("WebSocket::new failed");
 
+        let on_open = Closure::wrap(Box::new(|_: web_sys::Event| {
+            log!("websocket open");
+        }) as Box<dyn FnMut(web_sys::Event)>);
+        socket.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+        on_open.forget(); // ok to leak — fires once
+
+        let msg_count = std::rc::Rc::new(std::cell::Cell::new(0u64));
         let on_message = Closure::wrap(Box::new(move |e: MessageEvent| {
             if let Some(txt) = e.data().as_string() {
-                if let Ok(ServerMessage::EyeUpdate(state)) = serde_json::from_str::<ServerMessage>(&txt) {
-                    sink.set(state);
+                let n = msg_count.get();
+                msg_count.set(n + 1);
+                if n % 60 == 0 {
+                    log!("ws msg #{}: {}", n, txt);
                 }
+                match serde_json::from_str::<ServerMessage>(&txt) {
+                    Ok(ServerMessage::EyeUpdate(state)) => sink.set(state),
+                    Err(e) => err!("json parse error: {} — raw: {}", e, txt),
+                }
+            } else {
+                err!("non-string message received");
             }
         }) as Box<dyn FnMut(MessageEvent)>);
 
         let on_error = Closure::wrap(Box::new(|e: ErrorEvent| {
-            web_sys::console::error_1(&format!("ws error: {:?}", e.message()).into());
+            err!("ws error: {:?}", e.message());
         }) as Box<dyn FnMut(ErrorEvent)>);
 
-        let on_close = Closure::wrap(Box::new(|_: CloseEvent| {
-            web_sys::console::log_1(&"ws closed".into());
+        let on_close = Closure::wrap(Box::new(|c: CloseEvent| {
+            log!("ws closed — code={} reason='{}'", c.code(), c.reason());
         }) as Box<dyn FnMut(CloseEvent)>);
 
         socket.set_onmessage(Some(on_message.as_ref().unchecked_ref()));

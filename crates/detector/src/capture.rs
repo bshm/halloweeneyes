@@ -82,10 +82,23 @@ async fn run_simulation_only(
     info!("no camera configured — running in simulation-only mode");
     let mut sim = EyeSimulation::new(crate::simulation::SimConfig::default());
     let mut interval = tokio::time::interval(SIM_TICK_INTERVAL);
+    let mut tick_count: u64 = 0;
     loop {
         interval.tick().await;
         let state = simulation_tick(&mut sim, Instant::now());
-        let _ = tx.send(state);
+        tick_count += 1;
+        if tick_count % 300 == 0 {
+            debug!("sim tick {}: look=({:.2},{:.2}) blink={:.2}",
+                tick_count, state.look_x, state.look_y, state.blink_level);
+        }
+        match tx.send(state) {
+            Ok(n) => {
+                if tick_count == 1 {
+                    info!("first sim tick broadcast to {n} subscribers");
+                }
+            }
+            Err(_) => debug!("sim broadcast: no subscribers"),
+        }
     }
 }
 
@@ -95,6 +108,7 @@ async fn run_camera(
     tx: Arc<broadcast::Sender<EyeState>>,
 ) -> Result<()> {
     let rtsp_url = cfg.rtsp_url.as_deref().unwrap();
+    info!("camera mode: rtsp_url={}", rtsp_url);
     let mut sim = EyeSimulation::new(crate::simulation::SimConfig::default());
     let frame_bytes = (cfg.width * cfg.height * 3) as usize;
     let mut prev_gray: Option<GrayImage> = None;

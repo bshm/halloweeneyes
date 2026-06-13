@@ -8,12 +8,14 @@
 
 use anyhow::Result;
 use axum::{
+    body::Bytes,
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         State,
     },
+    http::StatusCode,
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use shared::{EyeState, ServerMessage};
@@ -32,6 +34,7 @@ pub async fn run(bind_addr: String, tx: Arc<broadcast::Sender<EyeState>>) -> Res
 
     let app = Router::new()
         .route("/ws", get(ws_handler))
+        .route("/log", post(frontend_log_handler))
         .fallback_service(ServeDir::new("frontend/dist"))
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -45,12 +48,23 @@ pub async fn run(bind_addr: String, tx: Arc<broadcast::Sender<EyeState>>) -> Res
     Ok(())
 }
 
+/// Receives plain-text log lines from the WASM frontend and prints them
+/// via tracing so they appear interleaved with backend logs.
+async fn frontend_log_handler(body: Bytes) -> StatusCode {
+    let msg = String::from_utf8_lossy(&body);
+    info!(target: "frontend", "{}", msg.trim());
+    StatusCode::NO_CONTENT
+}
+
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
+    info!("new WebSocket upgrade request");
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
+    info!("WebSocket client connected");
     let mut rx = state.tx.subscribe();
+    let mut sent = 0u64;
     loop {
         match rx.recv().await {
             Ok(eye_state) => {
@@ -58,8 +72,12 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                 match serde_json::to_string(&msg) {
                     Ok(json) => {
                         if socket.send(Message::Text(json.into())).await.is_err() {
-                            debug!("websocket client disconnected");
+                            info!("WebSocket client disconnected after {sent} messages");
                             break;
+                        }
+                        sent += 1;
+                        if sent % 300 == 0 {
+                            debug!("sent {sent} messages to ws client; last eye={:?}", eye_state);
                         }
                     }
                     Err(e) => {

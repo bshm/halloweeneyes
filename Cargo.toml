@@ -4,6 +4,11 @@ members = [
     "crates/detector",
     "crates/frontend",
 ]
+# frontend is wasm32-only — exclude from native cargo test/build
+default-members = [
+    "crates/shared",
+    "crates/detector",
+]
 resolver = "2"
 
 [workspace.package]
