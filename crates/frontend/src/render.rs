@@ -26,7 +26,7 @@ struct RenderState {
     bind_group: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
     mirror: f32,
-    frame_count: u64,
+    last_state: Option<EyeState>,
 }
 
 thread_local! {
@@ -37,11 +37,10 @@ pub fn update_eye_state(state: EyeState) {
     RENDERER.with(|r| {
         let mut guard = r.borrow_mut();
         if let Some(rs) = guard.as_mut() {
-            let n = rs.frame_count;
-            rs.frame_count += 1;
-            if n % 60 == 0 {
-                log!("frame {} — look=({:.2},{:.2}) blink={:.2}", n, state.look_x, state.look_y, state.blink_level);
+            if rs.last_state == Some(state) {
+                return;
             }
+            rs.last_state = Some(state);
             render_frame(
                 &rs.device, &rs.queue, &rs.surface,
                 &rs.pipeline, &rs.bind_group, &rs.uniform_buffer,
@@ -311,7 +310,7 @@ pub async fn init_renderer(canvas: web_sys::HtmlCanvasElement, mirror: f32) -> R
     RENDERER.with(|r| {
         *r.borrow_mut() = Some(RenderState {
             device, queue, surface, pipeline, bind_group, uniform_buffer, mirror,
-            frame_count: 0,
+            last_state: None,
         });
     });
     log!("renderer ready");
