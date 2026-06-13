@@ -4,7 +4,7 @@
 //! The WebSocket implementation connects to the detector server and deserialises
 //! incoming JSON into [`shared::EyeState`] signals.
 
-use leptos::prelude::WriteSignal;
+use leptos::prelude::{Set, WriteSignal};
 use shared::{EyeState, ServerMessage};
 use wasm_bindgen::prelude::*;
 use web_sys::{CloseEvent, ErrorEvent, MessageEvent, WebSocket};

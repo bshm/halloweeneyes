@@ -17,7 +17,8 @@ mod transport;
 
 use leptos::prelude::*;
 use shared::EyeState;
-use transport::WebSocketSource;
+use transport::{EyeStateSource, WebSocketSource};
+use wasm_bindgen::JsCast;
 
 pub fn main() {
     console_error_panic_hook::set_once();
@@ -53,8 +54,9 @@ fn EyeCanvas(eye_state: ReadSignal<EyeState>) -> impl IntoView {
     // Initialise the wgpu renderer once the canvas is mounted
     Effect::new(move |_| {
         if let Some(canvas) = canvas_ref.get() {
+            let html_canvas = canvas.unchecked_into::<web_sys::HtmlCanvasElement>();
             wasm_bindgen_futures::spawn_local(async move {
-                if let Err(e) = render::init_renderer(canvas).await {
+                if let Err(e) = render::init_renderer(html_canvas).await {
                     web_sys::console::error_1(&format!("renderer init failed: {e}").into());
                 }
             });

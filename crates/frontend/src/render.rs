@@ -5,8 +5,9 @@
 //!
 //! # Rendering approach
 //!
-//! The eye is drawn as two textured quads rendered by a simple fragment
-//! shader that composes the iris layer over the background/eyelid mask:
+//! The eye is drawn as a full-screen quad rendered by a WGSL fragment
+//! shader that procedurally composites the iris, pupil, sclera, and eyelid
+//! layers driven by uniforms (look_x, look_y, blink, mirror).
 //!
 //! ```text
 //! ┌─────────────────────────────┐
@@ -22,46 +23,39 @@
 //! The shader takes three uniforms: `look` (vec2), `blink` (float), and
 //! `mirror` (float, +1 or -1 for left/right eye).
 
-use anyhow::Result;
-use leptos::html::HtmlElement;
-use leptos::html::Canvas as LeptosCanvas;
+use anyhow::{anyhow, Result};
 use shared::EyeState;
-use std::cell::Cell;
-use std::sync::atomic::{AtomicBool, Ordering};
-use wasm_bindgen::JsCast;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use wasm_bindgen::prelude::*;
 
 // Global eye state shared between the Leptos signal handler and the render loop.
-// Using thread_local because WASM is single-threaded.
+// WASM is single-threaded so Cell / RefCell are safe here.
 thread_local! {
-    static CURRENT_STATE: Cell<EyeState> = Cell::new(EyeState::default_open());
-    static STATE_DIRTY: AtomicBool = const { AtomicBool::new(false) };
+    static CURRENT_STATE: RefCell<EyeState> = RefCell::new(EyeState::default_open());
+    static STATE_DIRTY: Cell<bool> = Cell::new(false);
 }
 
 /// Called by the Leptos effect whenever the eye state changes.
 pub fn update_eye_state(state: EyeState) {
-    CURRENT_STATE.with(|s| s.set(state));
-    STATE_DIRTY.with(|d| d.store(true, Ordering::Relaxed));
+    CURRENT_STATE.with(|s| *s.borrow_mut() = state);
+    STATE_DIRTY.with(|d| d.set(true));
 }
 
-/// Initialises the wgpu renderer and starts the animation loop.
-pub async fn init_renderer(canvas: HtmlElement<LeptosCanvas>) -> Result<()> {
-    let html_canvas = canvas.unchecked_ref::<web_sys::HtmlCanvasElement>();
-    let width = html_canvas.width();
-    let height = html_canvas.height();
+/// Initialises the wgpu renderer and starts the rAF animation loop.
+pub async fn init_renderer(canvas: web_sys::HtmlCanvasElement) -> Result<()> {
+    let width = canvas.width();
+    let height = canvas.height();
 
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::GL,
-        ..Default::default()
-    });
+    // Default instance selects WebGL2 on WASM (with the `webgl` feature).
+    let instance = wgpu::Instance::default();
 
-    // SAFETY: the canvas element is kept alive by the DOM for the entire
-    // duration of the page.
-    let surface = unsafe {
-        instance
-            .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::from_canvas(html_canvas)?)
-            .map_err(|e| anyhow::anyhow!("create_surface: {e}"))?
-    };
+    // Safe canvas surface creation — requires `webgl` feature in wgpu.
+    let surface: wgpu::Surface<'static> = instance
+        .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
+        .map_err(|e| anyhow!("create_surface: {e}"))?;
 
+    // wgpu 29: request_adapter returns Result<Adapter, RequestAdapterError>
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -69,12 +63,12 @@ pub async fn init_renderer(canvas: HtmlElement<LeptosCanvas>) -> Result<()> {
             force_fallback_adapter: false,
         })
         .await
-        .ok_or_else(|| anyhow::anyhow!("no suitable GPU adapter found"))?;
+        .map_err(|e| anyhow!("request_adapter: {e}"))?;
 
     let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor::default(), None)
+        .request_device(&wgpu::DeviceDescriptor::default())
         .await
-        .map_err(|e| anyhow::anyhow!("request_device: {e}"))?;
+        .map_err(|e| anyhow!("request_device: {e}"))?;
 
     let surface_format = wgpu::TextureFormat::Rgba8Unorm;
     surface.configure(
@@ -91,9 +85,6 @@ pub async fn init_renderer(canvas: HtmlElement<LeptosCanvas>) -> Result<()> {
         },
     );
 
-    // Minimal WGSL shader: renders a full-screen quad and colours it based on
-    // eye state uniforms.  Texture sampling is a TODO — images are loaded from
-    // the server in a subsequent step.
     let shader_src = include_str!("eye.wgsl");
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("eye_shader"),
@@ -101,10 +92,9 @@ pub async fn init_renderer(canvas: HtmlElement<LeptosCanvas>) -> Result<()> {
     });
 
     // Uniform buffer: [look_x: f32, look_y: f32, blink: f32, mirror: f32]
-    let uniform_data = [0.0f32; 4];
     let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("eye_uniforms"),
-        size: (uniform_data.len() * std::mem::size_of::<f32>()) as u64,
+        size: (4 * std::mem::size_of::<f32>()) as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -134,8 +124,10 @@ pub async fn init_renderer(canvas: HtmlElement<LeptosCanvas>) -> Result<()> {
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("eye_pipeline_layout"),
-        bind_group_layouts: &[&bind_group_layout],
-        push_constant_ranges: &[],
+        // wgpu 29: bind_group_layouts is &[Option<&BindGroupLayout>]
+        bind_group_layouts: &[Some(&bind_group_layout)],
+        // wgpu 29: push_constant_ranges replaced by immediate_size
+        immediate_size: 0,
     });
 
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -163,11 +155,11 @@ pub async fn init_renderer(canvas: HtmlElement<LeptosCanvas>) -> Result<()> {
         },
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
-        multiview: None,
+        // wgpu 29: renamed from `multiview`
+        multiview_mask: None,
         cache: None,
     });
 
-    // Hand off to the animation loop using requestAnimationFrame
     start_render_loop(device, queue, surface, pipeline, bind_group, uniform_buffer);
 
     Ok(())
@@ -181,11 +173,7 @@ fn start_render_loop(
     bind_group: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
 ) {
-    use wasm_bindgen::prelude::*;
-    use web_sys::window;
-
-    // Rc-wrapped state for the closure
-    let state = std::rc::Rc::new(std::cell::RefCell::new((
+    let state = Rc::new(RefCell::new((
         device,
         queue,
         surface,
@@ -194,29 +182,26 @@ fn start_render_loop(
         uniform_buffer,
     )));
 
-    let f = std::rc::Rc::new(std::cell::RefCell::new(None::<Closure<dyn FnMut()>>));
+    // Classic Rust/WASM requestAnimationFrame loop pattern.
+    let f: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
     let g = f.clone();
 
     *g.borrow_mut() = Some(Closure::new(move || {
-        let eye = CURRENT_STATE.with(|s| s.get());
-        let dirty = STATE_DIRTY.with(|d| d.swap(false, Ordering::Relaxed));
-
+        let dirty = STATE_DIRTY.with(|d| d.replace(false));
         if dirty {
-            let (device, queue, surface, pipeline, bind_group, uniform_buffer) =
-                &*state.borrow();
+            let eye = CURRENT_STATE.with(|s| *s.borrow());
+            let mut guard = state.borrow_mut();
+            let (device, queue, surface, pipeline, bind_group, uniform_buffer) = &mut *guard;
             render_frame(device, queue, surface, pipeline, bind_group, uniform_buffer, &eye);
         }
 
-        // Schedule next frame
-        window()
+        web_sys::window()
             .unwrap()
-            .request_animation_frame(
-                f.borrow().as_ref().unwrap().as_ref().unchecked_ref(),
-            )
+            .request_animation_frame(f.borrow().as_ref().unwrap().as_ref().unchecked_ref())
             .expect("requestAnimationFrame failed");
     }));
 
-    window()
+    web_sys::window()
         .unwrap()
         .request_animation_frame(g.borrow().as_ref().unwrap().as_ref().unchecked_ref())
         .expect("requestAnimationFrame failed");
@@ -235,13 +220,15 @@ fn render_frame(
         eye.look_x as f32,
         eye.look_y as f32,
         eye.blink_level as f32,
-        1.0f32, // mirror: 1.0 = left eye (no mirror)
+        1.0f32, // mirror: 1.0 = left eye
     ];
     queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&uniforms));
 
+    // wgpu 29: CurrentSurfaceTexture is an enum with Success/Suboptimal/error variants
     let frame = match surface.get_current_texture() {
-        Ok(f) => f,
-        Err(_) => return,
+        wgpu::CurrentSurfaceTexture::Success(t)
+        | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+        _ => return,
     };
     let view = frame
         .texture
@@ -261,10 +248,14 @@ fn render_frame(
                     load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                     store: wgpu::StoreOp::Store,
                 },
+                // wgpu 29: new required field
+                depth_slice: None,
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            // wgpu 29: renamed from `multiview`
+            multiview_mask: None,
         });
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, bind_group, &[]);

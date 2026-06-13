@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 /// Normalised eye state broadcast from detector to all renderers.
 /// Both axes are in the range [-1.0, 1.0].
 /// `blink_level` is in [0.0, 1.0]; 0 = fully open, 1 = fully closed.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct EyeState {
     /// Horizontal gaze direction, -1 = far left, +1 = far right.
     pub look_x: f64,
