@@ -923,6 +923,7 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "console_error_panic_hook",
+ "image",
  "js-sys",
  "leptos",
  "proptest",

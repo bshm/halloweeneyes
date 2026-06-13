@@ -61,7 +61,12 @@ impl EyeStateSource for WebSocketSource {
                     log!("ws msg #{}: {}", n, txt);
                 }
                 match serde_json::from_str::<ServerMessage>(&txt) {
-                    Ok(ServerMessage::EyeUpdate(state)) => sink.set(state),
+                    Ok(ServerMessage::EyeUpdate(state)) => {
+                        // Update the renderer thread-local directly — no Leptos
+                        // reactive dispatch needed here.
+                        crate::render::update_eye_state(state);
+                        sink.set(state);
+                    },
                     Err(e) => err!("json parse error: {} — raw: {}", e, txt),
                 }
             } else {

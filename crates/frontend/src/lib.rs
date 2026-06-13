@@ -52,34 +52,39 @@ fn App() -> impl IntoView {
     // application lifetime — WASM is single-threaded, there is no cleanup path.
     std::mem::forget(WebSocketSource::connect(ws_url, set_eye_state));
 
+    // Read ?eye=left (default) or ?eye=right from query string
+    let mirror = {
+        let search = web_sys::window()
+            .expect("no window")
+            .location()
+            .search()
+            .unwrap_or_default();
+        if search.contains("eye=right") { -1.0f32 } else { 1.0f32 }
+    };
+
     view! {
-        <EyeCanvas eye_state=eye_state />
+        <EyeCanvas eye_state=eye_state mirror=mirror />
     }
 }
 
 #[component]
-fn EyeCanvas(eye_state: ReadSignal<EyeState>) -> impl IntoView {
+fn EyeCanvas(eye_state: ReadSignal<EyeState>, mirror: f32) -> impl IntoView {
     use leptos::html::Canvas;
 
     let canvas_ref = NodeRef::<Canvas>::new();
 
-    // Initialise the wgpu renderer once the canvas is mounted
     Effect::new(move |_| {
-        if let Some(canvas) = canvas_ref.get() {
-            log!("canvas element found — starting renderer");
-            let html_canvas = canvas.unchecked_into::<web_sys::HtmlCanvasElement>();
-            wasm_bindgen_futures::spawn_local(async move {
-                match render::init_renderer(html_canvas).await {
-                    Ok(()) => log!("renderer init OK"),
-                    Err(e) => crate::diagnostics::log_remote(&format!("[eye-app] renderer init FAILED: {e}")),
-                }
-            });
-        } else {
-            log!("canvas_ref not yet mounted");
-        }
+        let Some(canvas) = canvas_ref.get() else { return; };
+        log!("canvas found — starting renderer (mirror={})", mirror);
+        let html_canvas = canvas.unchecked_into::<web_sys::HtmlCanvasElement>();
+        wasm_bindgen_futures::spawn_local(async move {
+            match render::init_renderer(html_canvas, mirror).await {
+                Ok(()) => log!("renderer init OK"),
+                Err(e) => crate::diagnostics::log_remote(&format!("[eye-app] renderer FAILED: {e}")),
+            }
+        });
     });
 
-    // Re-render whenever eye state changes
     Effect::new(move |_| {
         let state = eye_state.get();
         render::update_eye_state(state);
@@ -91,7 +96,6 @@ fn EyeCanvas(eye_state: ReadSignal<EyeState>) -> impl IntoView {
             id="eye-canvas"
             width="800"
             height="600"
-            style="background:#000;display:block;margin:auto;"
         />
     }
 }
