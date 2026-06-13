@@ -8,26 +8,47 @@
 
 use anyhow::{anyhow, Result};
 use shared::EyeState;
-use std::cell::{Cell, RefCell};
-use std::rc::Rc;
-use wasm_bindgen::prelude::*;
+use std::cell::RefCell;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
-
-thread_local! {
-    static CURRENT_STATE: RefCell<EyeState> = RefCell::new(EyeState::default_open());
-    static STATE_DIRTY: Cell<bool> = Cell::new(false);
-}
-
-pub fn update_eye_state(state: EyeState) {
-    CURRENT_STATE.with(|s| *s.borrow_mut() = state);
-    STATE_DIRTY.with(|d| d.set(true));
-}
 
 macro_rules! log {
     ($($arg:tt)*) => {
         crate::diagnostics::log_remote(&format!("[eye-renderer] {}", format!($($arg)*)))
     };
+}
+
+struct RenderState {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    surface: wgpu::Surface<'static>,
+    pipeline: wgpu::RenderPipeline,
+    bind_group: wgpu::BindGroup,
+    uniform_buffer: wgpu::Buffer,
+    mirror: f32,
+    frame_count: u64,
+}
+
+thread_local! {
+    static RENDERER: RefCell<Option<RenderState>> = RefCell::new(None);
+}
+
+pub fn update_eye_state(state: EyeState) {
+    RENDERER.with(|r| {
+        let mut guard = r.borrow_mut();
+        if let Some(rs) = guard.as_mut() {
+            let n = rs.frame_count;
+            rs.frame_count += 1;
+            if n % 60 == 0 {
+                log!("frame {} — look=({:.2},{:.2}) blink={:.2}", n, state.look_x, state.look_y, state.blink_level);
+            }
+            render_frame(
+                &rs.device, &rs.queue, &rs.surface,
+                &rs.pipeline, &rs.bind_group, &rs.uniform_buffer,
+                &state, rs.mirror,
+            );
+        }
+    });
 }
 
 async fn fetch_bytes(url: &str) -> Result<Vec<u8>> {
@@ -282,49 +303,21 @@ pub async fn init_renderer(canvas: web_sys::HtmlCanvasElement, mirror: f32) -> R
     });
 
     log!("pipeline created");
-    start_render_loop(device, queue, surface, pipeline, bind_group, uniform_buffer, mirror);
-    log!("render loop started");
+
+    // Render the initial frame immediately so the eye is visible before any WebSocket update.
+    let initial_state = EyeState::default_open();
+    render_frame(&device, &queue, &surface, &pipeline, &bind_group, &uniform_buffer, &initial_state, mirror);
+
+    RENDERER.with(|r| {
+        *r.borrow_mut() = Some(RenderState {
+            device, queue, surface, pipeline, bind_group, uniform_buffer, mirror,
+            frame_count: 0,
+        });
+    });
+    log!("renderer ready");
     Ok(())
 }
 
-fn start_render_loop(
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    surface: wgpu::Surface<'static>,
-    pipeline: wgpu::RenderPipeline,
-    bind_group: wgpu::BindGroup,
-    uniform_buffer: wgpu::Buffer,
-    mirror: f32,
-) {
-    let state = Rc::new(RefCell::new((device, queue, surface, pipeline, bind_group, uniform_buffer, mirror)));
-    let f: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
-    let g = f.clone();
-    let frame_count = Rc::new(Cell::new(0u64));
-
-    *g.borrow_mut() = Some(Closure::new(move || {
-        STATE_DIRTY.with(|d| d.set(false)); // consume dirty flag
-        let eye = CURRENT_STATE.with(|s| *s.borrow());
-        let n = frame_count.get();
-        frame_count.set(n + 1);
-        if n % 60 == 0 {
-            log!("frame {} — look=({:.2},{:.2}) blink={:.2}", n, eye.look_x, eye.look_y, eye.blink_level);
-        }
-        {
-            let mut guard = state.borrow_mut();
-            let (device, queue, surface, pipeline, bind_group, uniform_buffer, mirror) = &mut *guard;
-            render_frame(device, queue, surface, pipeline, bind_group, uniform_buffer, &eye, *mirror);
-        }
-        web_sys::window()
-            .unwrap()
-            .request_animation_frame(f.borrow().as_ref().unwrap().as_ref().unchecked_ref())
-            .expect("rAF failed");
-    }));
-
-    web_sys::window()
-        .unwrap()
-        .request_animation_frame(g.borrow().as_ref().unwrap().as_ref().unchecked_ref())
-        .expect("rAF failed");
-}
 
 fn render_frame(
     device: &wgpu::Device,
