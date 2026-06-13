@@ -35,7 +35,7 @@ pub async fn run(bind_addr: String, tx: Arc<broadcast::Sender<EyeState>>) -> Res
     let app = Router::new()
         .route("/ws", get(ws_handler))
         .route("/log", post(frontend_log_handler))
-        .fallback_service(ServeDir::new("frontend/dist"))
+        .fallback_service(ServeDir::new("crates/frontend/dist"))
         .layer(CorsLayer::permissive())
         .with_state(state);
 

@@ -6,9 +6,11 @@ public_url = "/"
 [watch]
 ignore = ["dist"]
 
-# Dev-mode proxies — forward WebSocket and diagnostic log endpoint to the detector
-[[proxy]]
-backend = "ws://localhost:8080/ws"
-
+# Dev-mode proxies
+# /log  — forward frontend diagnostic logs to the detector (HTTP)
+# /ws   — WebSocket proxy; use http:// scheme, trunk handles the upgrade
 [[proxy]]
 backend = "http://localhost:8080/log"
+
+[[proxy]]
+backend = "http://localhost:8080/ws"

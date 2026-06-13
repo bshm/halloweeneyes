@@ -103,7 +103,7 @@ browser tab receives the same eye state from the websocket broadcast.
 
 # terminal 2 — trunk dev server with hot-reload
 cd crates/frontend
-trunk serve --port 8081 --proxy-backend=ws://localhost:8080/ws
+trunk serve --port 8081
 ```
 
 open `http://localhost:8081`.

@@ -54,9 +54,34 @@ pub async fn init_renderer(canvas: web_sys::HtmlCanvasElement) -> Result<()> {
     let height = canvas.height();
     log!("init_renderer start: canvas {}x{}", width, height);
 
-    // Default instance selects WebGL2 on WASM (with the `webgl` feature).
-    let instance = wgpu::Instance::default();
-    log!("instance created");
+    // On WASM, wgpu-core requires a WebDisplayHandle in the InstanceDescriptor.
+    // Instance::default() uses new_without_display_handle() which leaves display=None,
+    // causing MissingDisplayHandle when create_surface is called with Canvas.
+    // WASM is single-threaded so wrapping the non-Send DisplayHandle is safe.
+    struct WebDisplay(wgpu::rwh::DisplayHandle<'static>);
+    // SAFETY: WASM is single-threaded; there is no concurrent access.
+    unsafe impl Send for WebDisplay {}
+    unsafe impl Sync for WebDisplay {}
+    impl std::fmt::Debug for WebDisplay {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "WebDisplay")
+        }
+    }
+    impl wgpu::rwh::HasDisplayHandle for WebDisplay {
+        fn display_handle(&self) -> Result<wgpu::rwh::DisplayHandle<'_>, wgpu::rwh::HandleError> {
+            Ok(self.0)
+        }
+    }
+
+    // Force GL (= WebGL2) backend. Backends::all() includes BROWSER_WEBGPU; if
+    // navigator.gpu is present Chrome locks to WebGPU-only and skips WebGL,
+    // causing "No suitable adapter" even though the webgl feature is compiled in.
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::GL,
+        display: Some(Box::new(WebDisplay(wgpu::rwh::DisplayHandle::web()))),
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+    log!("instance created (GL/WebGL2 backend)");
 
     // Safe canvas surface creation — requires `webgl` feature in wgpu.
     let surface: wgpu::Surface<'static> = instance
@@ -76,7 +101,10 @@ pub async fn init_renderer(canvas: web_sys::HtmlCanvasElement) -> Result<()> {
     log!("adapter: {:?}", adapter.get_info());
 
     let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor::default())
+        .request_device(&wgpu::DeviceDescriptor {
+            required_limits: wgpu::Limits::downlevel_webgl2_defaults(),
+            ..Default::default()
+        })
         .await
         .map_err(|e| anyhow!("request_device: {e}"))?;
     log!("device created");

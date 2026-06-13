@@ -21,7 +21,7 @@ pub fn log_remote(msg: &str) {
         None => return, // not in a browser context
     };
 
-    let mut opts = web_sys::RequestInit::new();
+    let opts = web_sys::RequestInit::new();
     opts.set_method("POST");
     opts.set_mode(web_sys::RequestMode::SameOrigin);
     opts.set_body(&wasm_bindgen::JsValue::from_str(msg));
