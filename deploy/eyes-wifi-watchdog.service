@@ -1,0 +1,13 @@
+[Unit]
+Description=WiFi watchdog (reconnect when the gateway stops answering)
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+User=root
+ExecStart=/opt/eyes/wifi-watchdog.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

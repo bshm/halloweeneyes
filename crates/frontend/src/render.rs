@@ -35,7 +35,7 @@ struct RenderState {
 thread_local! {
     static RENDERER: RefCell<Option<RenderState>> = RefCell::new(None);
     /// (server t_ms, state) samples waiting to be played back.
-    static TIMELINE: RefCell<VecDeque<(f64, EyeState)>> = RefCell::new(VecDeque::new());
+    static TIMELINE: RefCell<VecDeque<(f64, f64, EyeState)>> = RefCell::new(VecDeque::new());
     /// server_ms - local_ms, measured over the websocket/HTTP path.
     static CLOCK_OFFSET_MS: Cell<f64> = const { Cell::new(0.0) };
     static RAF_HANDLE: RefCell<Option<wasm_bindgen::closure::Closure<dyn FnMut(f64)>>> =
@@ -68,11 +68,21 @@ fn start_render_loop() {
             let dt = ((now - rs.last_time) / 1000.0).max(0.0);
             rs.last_time = now;
 
-            let offset = CLOCK_OFFSET_MS.with(|c| c.get());
-            let display_ms = now + offset - PLAYBACK_DELAY_MS;
-            if let Some(st) = sample_at(display_ms) {
-                rs.target = st;
+            // Play back relative to the newest sample's arrival on this client:
+            // no dependence on a cross-clock offset, so a detector restart
+            // cannot leave the playhead stranded in the past.
+            let display_ms = TIMELINE.with(|t| {
+                let q = t.borrow();
+                q.back().map(|&(t_ms, arrival, _)| {
+                    t_ms - PLAYBACK_DELAY_MS + (now - arrival)
+                })
+            });
+            if let Some(display_ms) = display_ms {
+                if let Some(st) = sample_at(display_ms) {
+                    rs.target = st;
+                }
             }
+            let _ = now;
 
             let alpha = if SMOOTH_TAU <= 0.0 { 1.0 } else { 1.0 - (-dt / SMOOTH_TAU).exp() };
             rs.current.look_x += (rs.target.look_x - rs.current.look_x) * alpha;
@@ -97,7 +107,7 @@ fn start_render_loop() {
                 let _ = js_sys::Reflect::set(&obj, &"look_y".into(), &rs.current.look_y.into());
                 let _ = js_sys::Reflect::set(&obj, &"blink".into(), &rs.current.blink_level.into());
                 let _ = js_sys::Reflect::set(&obj, &"mirror".into(), &rs.mirror.into());
-                let _ = js_sys::Reflect::set(&obj, &"offset".into(), &offset.into());
+                let _ = js_sys::Reflect::set(&obj, &"offset".into(), &CLOCK_OFFSET_MS.with(|c| c.get()).into());
                 let _ = js_sys::Reflect::set(&obj, &"queued".into(), &(TIMELINE.with(|t| t.borrow().len()) as f64).into());
                 let _ = js_sys::Reflect::set(&win, &"eyeDebug".into(), &obj);
             }
@@ -128,13 +138,17 @@ pub fn push_state(state: EyeState) {
         // redeploy). Old samples would then sit "in the future" forever, the
         // queue would never prune and the playhead would pin to the oldest
         // sample - a frozen eye. Detect the jump and resync.
-        if let Some(&(last, _)) = q.back() {
+        if let Some(&(last, _, _)) = q.back() {
             if state.t_ms + 1000.0 < last {
                 q.clear();
             }
         }
 
-        q.push_back((state.t_ms, state));
+        let arrival = web_sys::window()
+            .and_then(|w| w.performance())
+            .map(|p| p.now())
+            .unwrap_or(0.0);
+        q.push_back((state.t_ms, arrival, state));
 
         // Hard cap: 240 samples ~ 4 s at 60 Hz, independent of timestamps.
         while q.len() > 240 {
@@ -170,7 +184,7 @@ fn sample_at(now_ms: f64) -> Option<EyeState> {
             return None;
         }
         let mut prev: Option<(f64, EyeState)> = None;
-        for (ts, st) in q.iter() {
+        for (ts, _arrival, st) in q.iter() {
             if *ts >= now_ms {
                 if let Some((pts, pst)) = prev {
                     let span = (*ts - pts).max(0.0001);
