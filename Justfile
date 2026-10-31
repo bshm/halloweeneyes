@@ -15,7 +15,7 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 image      := "radxa-rk3576_bookworm_kde_b3.output_512.img.xz"
 left_ip    := "192.168.42.92"
 left_host  := "radxa@" + left_ip
-right_ip   := "192.168.42.93"
+right_ip   := "192.168.42.128"
 wifi_ssid  := "TODOFixLater"
 ssh_port   := "2222"
 cam_rtsp   := "rtsp://admin:admin@192.168.42.115:554/live/mpeg4"
@@ -79,7 +79,7 @@ card-left dev host="left-eye":
 card-right dev host="right-eye" kiosk="":
     @[[ -n "$${WIFI_FILE:-}" ]] || just wifi-file
     @set -euo pipefail; \
-      k="{{kiosk}}"; [[ -n "$$k" ]] || k="http://{{left_ip}}:8080/"; \
+      k="{{kiosk}}"; [[ -n "$$k" ]] || k="http://{{left_ip}}:8080/?eye=right"; \
       WIFI_FILE=$${WIFI_FILE:-{{wifi_key}}} deploy/apply-card.sh {{dev}}3 eyes-right {{host}} "$$k"
 
 # flash + prepare in one go

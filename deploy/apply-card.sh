@@ -33,7 +33,6 @@ sudo sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t$HOST/" "$M/etc/hosts"
 # --- ssh ------------------------------------------------------------------
 # rsetup removes ssh.service at every boot, so eyes-sshd is the durable unit.
 sudo install -m 644 "$HERE/10-headless.conf" "$M/etc/ssh/sshd_config.d/10-headless.conf"
-sudo ln -sf /lib/systemd/system/ssh.service "$M/etc/systemd/system/multi-user.target.wants/ssh.service"
 sudo install -m 644 "$HERE/eyes-sshd.service" "$M/etc/systemd/system/eyes-sshd.service"
 sudo ln -sf /etc/systemd/system/eyes-sshd.service "$M/etc/systemd/system/multi-user.target.wants/eyes-sshd.service"
 
@@ -74,6 +73,16 @@ if [[ "$MODE" == eyes-left ]]; then
   sudo ln -sf /etc/systemd/system/eyes-detector.service \
     "$M/etc/systemd/system/multi-user.target.wants/eyes-detector.service"
 fi
+
+# --- silence the unused PCIe host ----------------------------------------
+# pcie@2a200000 is enabled in the shipped DTB but has no endpoint on this board,
+# so it logs "PCIe Link Fail / failed to initialize host" at every boot.
+# Disable that node only (pcie@2a210000 is already disabled).
+for DTB in "$M"/usr/lib/linux-image-*/rockchip/rk3576-rock-4d-spi.dtb; do
+  [[ -f "$DTB" ]] || continue
+  sudo cp "$DTB" "$DTB.bak"
+  sudo fdtput -t s "$DTB" /pcie@2a200000 status disabled || true
+done
 
 [[ -d "$M/opt/eyes" ]] && sudo chown -R 1000:1000 "$M/opt/eyes"
 sudo sync
