@@ -30,11 +30,15 @@ use tracing::{debug, info, warn};
 const SIM_TICK_INTERVAL: Duration = Duration::from_millis(16);
 
 /// Easing time constant for the broadcast state (detector-side, shared by all clients).
-const BROADCAST_TAU: f64 = 0.12;
+/// Stage 1: filter the raw motion target so per-frame centroid jumps are gone.
+const TARGET_TAU: f64 = 0.12;
+
+/// Stage 2: filter the already-smoothed target onto the output timeline.
+const OUTPUT_TAU: f64 = 0.05;
 
 /// Hard cap on how far the broadcast state may move per second, so a large
 /// jump in the motion centroid (or motion flipping on/off) cannot snap the eye.
-const MAX_SLEW_PER_SEC: f64 = 1.2;
+const MAX_SLEW_PER_SEC: f64 = 4.0;
 
 /// If ffmpeg produces no frame for this long, the stream is considered dead and
 /// the subprocess is restarted.
@@ -130,6 +134,7 @@ async fn run_camera(
         .unwrap_or(Instant::now());
     let start = Instant::now();
     let mut target = sim.tick(Instant::now());
+    let mut filtered = target;
     let mut current = target;
     let mut last_tick = Instant::now();
 
@@ -214,15 +219,23 @@ async fn run_camera(
                     let now = Instant::now();
                     let dt = now.duration_since(last_tick).as_secs_f64();
                     last_tick = now;
-                    let alpha = 1.0 - (-dt / BROADCAST_TAU).exp();
+                    // Stage 1: raw target -> filtered target (removes centroid jumps)
+                    let a1 = 1.0 - (-dt / TARGET_TAU).exp();
+                    filtered.look_x += (target.look_x - filtered.look_x) * a1;
+                    filtered.look_y += (target.look_y - filtered.look_y) * a1;
+                    filtered.blink_level += (target.blink_level - filtered.blink_level) * a1;
+                    filtered.motion_detected = target.motion_detected;
+
+                    // Stage 2: filtered target -> output (keeps the motion lively)
+                    let a2 = 1.0 - (-dt / OUTPUT_TAU).exp();
                     let max_step = MAX_SLEW_PER_SEC * dt;
                     let step = |cur: f64, tgt: f64| {
-                        let d = (tgt - cur) * alpha;
+                        let d = (tgt - cur) * a2;
                         d.clamp(-max_step, max_step)
                     };
-                    current.look_x += step(current.look_x, target.look_x);
-                    current.look_y += step(current.look_y, target.look_y);
-                    current.blink_level += step(current.blink_level, target.blink_level);
+                    current.look_x += step(current.look_x, filtered.look_x);
+                    current.look_y += step(current.look_y, filtered.look_y);
+                    current.blink_level += step(current.blink_level, filtered.blink_level);
                     current.motion_detected = target.motion_detected;
                     current.t_ms = start.elapsed().as_secs_f64() * 1000.0;
                     let _ = tx.send(current);
