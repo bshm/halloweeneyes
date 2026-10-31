@@ -123,7 +123,24 @@ fn start_render_loop() {
 pub fn push_state(state: EyeState) {
     TIMELINE.with(|t| {
         let mut q = t.borrow_mut();
+
+        // The detector restarts its monotonic clock at zero (service restart,
+        // redeploy). Old samples would then sit "in the future" forever, the
+        // queue would never prune and the playhead would pin to the oldest
+        // sample - a frozen eye. Detect the jump and resync.
+        if let Some(&(last, _)) = q.back() {
+            if state.t_ms + 1000.0 < last {
+                q.clear();
+            }
+        }
+
         q.push_back((state.t_ms, state));
+
+        // Hard cap: 240 samples ~ 4 s at 60 Hz, independent of timestamps.
+        while q.len() > 240 {
+            q.pop_front();
+        }
+        // Age-based prune on top, for sparse senders.
         while q.len() > 1 && state.t_ms - q.front().map(|s| s.0).unwrap_or(state.t_ms) > TIMELINE_KEEP_MS {
             q.pop_front();
         }
