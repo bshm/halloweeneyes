@@ -139,6 +139,111 @@ pub struct OverlayInfo {
     pub camera_restarts: u64,
     pub clients: usize,
     pub motion: bool,
+    /// Last mapped gaze position, if any.
+    pub eye: Option<(f64, f64)>,
+}
+
+/// Marching-squares iso-line of `field(x, y) - level == 0` over the frame.
+fn draw_iso<F: Fn(f64, f64) -> f64>(
+    img: &mut RgbImage,
+    level: f64,
+    step: u32,
+    color: Rgb<u8>,
+    field: F,
+) {
+    let (w, h) = (img.width(), img.height());
+    let mut y = 0;
+    while y + step < h {
+        let mut x = 0;
+        while x + step < w {
+            let v = [
+                field(x as f64, y as f64) - level,
+                field((x + step) as f64, y as f64) - level,
+                field((x + step) as f64, (y + step) as f64) - level,
+                field(x as f64, (y + step) as f64) - level,
+            ];
+            let p = [
+                (x as f32, y as f32),
+                ((x + step) as f32, y as f32),
+                ((x + step) as f32, (y + step) as f32),
+                (x as f32, (y + step) as f32),
+            ];
+            let mut hits = Vec::with_capacity(4);
+            for i in 0..4 {
+                let j = (i + 1) % 4;
+                if (v[i] < 0.0) != (v[j] < 0.0) {
+                    let t = (0.0 - v[i]) / (v[j] - v[i]);
+                    hits.push((
+                        p[i].0 + (p[j].0 - p[i].0) * t as f32,
+                        p[i].1 + (p[j].1 - p[i].1) * t as f32,
+                    ));
+                }
+            }
+            if hits.len() == 2 {
+                draw_line_segment_mut(img, hits[0], hits[1], color);
+            } else if hits.len() == 4 {
+                draw_line_segment_mut(img, hits[0], hits[1], color);
+                draw_line_segment_mut(img, hits[2], hits[3], color);
+            }
+            x += step;
+        }
+        y += step;
+    }
+}
+
+/// Iso-lines of the camera-to-eye mapping and a small eye-space panel.
+fn draw_mapping(img: &mut RgbImage, cfg: &crate::coordinate::CoordinateMapConfig, eye: Option<(f64, f64)>) {
+    let step = 4;
+    for &(level, color) in &[
+        (-1.0, Rgb([80, 140, 255])),
+        (0.0, Rgb([140, 200, 255])),
+        (1.0, Rgb([80, 140, 255])),
+    ] {
+        draw_iso(img, level, step, color, |x, y| {
+            crate::coordinate::map_to_eye(x, y, cfg).0
+        });
+    }
+    for &(level, color) in &[
+        (-1.0, Rgb([255, 210, 90])),
+        (0.0, Rgb([255, 240, 160])),
+        (1.0, Rgb([255, 210, 90])),
+    ] {
+        draw_iso(img, level, step, color, |x, y| {
+            crate::coordinate::map_to_eye(x, y, cfg).1
+        });
+    }
+
+    // Eye-space panel bottom-left: [-1,1]^2 with centre cross and current point.
+    let size = 64i32;
+    let (w, h) = (img.width() as i32, img.height() as i32);
+    let (x0, y0) = (2, h - size - 2);
+    for yy in y0..y0 + size {
+        for xx in x0..x0 + size {
+            if xx > 0 && yy > 0 && (xx as u32) < img.width() && (yy as u32) < img.height() {
+                let edge = xx == x0 || yy == y0 || xx == x0 + size - 1 || yy == y0 + size - 1;
+                if edge {
+                    img.put_pixel(xx as u32, yy as u32, Rgb([200, 200, 200]));
+                } else {
+                    let px = img.get_pixel_mut(xx as u32, yy as u32);
+                    *px = Rgb([
+                        (px[0] as u32 * 3 / 8) as u8,
+                        (px[1] as u32 * 3 / 8) as u8,
+                        (px[2] as u32 * 3 / 8) as u8,
+                    ]);
+                }
+            }
+        }
+    }
+    let cx = x0 + size / 2;
+    let cy = y0 + size / 2;
+    draw_line_segment_mut(img, (cx as f32, y0 as f32 + 1.0), (cx as f32, (y0 + size - 1) as f32), Rgb([90, 90, 90]));
+    draw_line_segment_mut(img, (x0 as f32 + 1.0, cy as f32), ((x0 + size - 1) as f32, cy as f32), Rgb([90, 90, 90]));
+    if let Some((ex, ey)) = eye {
+        let px = x0 as f64 + size as f64 / 2.0 + ex.clamp(-1.0, 1.0) * (size as f64 / 2.0 - 2.0);
+        let py = y0 as f64 + size as f64 / 2.0 + ey.clamp(-1.0, 1.0) * (size as f64 / 2.0 - 2.0);
+        draw_line_segment_mut(img, (px as f32 - 2.0, py as f32), (px as f32 + 2.0, py as f32), Rgb([255, 60, 60]));
+        draw_line_segment_mut(img, (px as f32, py as f32 - 2.0), (px as f32, py as f32 + 2.0), Rgb([255, 60, 60]));
+    }
 }
 
 /// Shared camera status, updated by the capture loop and read by the
@@ -179,6 +284,7 @@ impl CameraStatus {
             camera_restarts: self.restarts.load(Ordering::Relaxed),
             clients,
             motion: false,
+            eye: None,
         }
     }
 }
@@ -207,7 +313,14 @@ fn local_hms() -> String {
 }
 
 /// Draw bounding box, centroid and status text on a copy of the raw frame.
-fn annotate(buf: &[u8], w: u32, h: u32, res: Option<&crate::motion::MotionResult>, info: &OverlayInfo) -> RgbImage {
+fn annotate(
+    buf: &[u8],
+    w: u32,
+    h: u32,
+    res: Option<&crate::motion::MotionResult>,
+    map: &crate::coordinate::CoordinateMapConfig,
+    info: &OverlayInfo,
+) -> RgbImage {
     let mut img = RgbImage::from_raw(w, h, buf.to_vec()).unwrap_or_else(|| RgbImage::new(w, h));
     if let Some(r) = res {
         let (x0, y0, x1, y1) = r.bbox;
@@ -221,13 +334,15 @@ fn annotate(buf: &[u8], w: u32, h: u32, res: Option<&crate::motion::MotionResult
         draw_line_segment_mut(&mut img, (cx, cy - 6.0), (cx, cy + 6.0), Rgb([255, 0, 0]));
     }
 
+    draw_mapping(&mut img, map, info.eye);
+
     if let Some(font) = font() {
         let scale = ab_glyph::PxScale::from(12.0);
         let white = Rgb([255, 255, 255]);
         let lines = [
-            format!("{}  t={:.1}s", local_hms(), info.t_ms / 1000.0),
+            format!("{:>8}  t={:>7.1}s", local_hms(), info.t_ms / 1000.0),
             format!(
-                "cam {:.1}fps {}ms r{} cl{} m{}",
+                "cam {:>5.1}fps {:>6}ms r{:<3} cl{:<3} m{}",
                 info.camera_fps,
                 info.camera_age_ms as i64,
                 info.camera_restarts,
@@ -398,6 +513,7 @@ async fn run_camera(
     let frame_bytes = (cfg.width * cfg.height * 3) as usize;
     let mut prev_gray: Option<GrayImage> = None;
     let mut last_result: Option<crate::motion::MotionResult> = None;
+    let mut last_eye: Option<(f64, f64)> = None;
     let mut camera_restarts: u64 = 0;
     let status = Arc::new(CameraStatus::new());
     if have_debug || have_pub {
@@ -408,6 +524,7 @@ async fn run_camera(
         let ka_tx_ws = tx.clone();
         let blank = vec![0u8; frame_bytes];
         let (w, h) = (cfg.width, cfg.height);
+        let map_cfg = cfg.coordinate.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -415,7 +532,7 @@ async fn run_camera(
                 if info.camera_age_ms < 500.0 {
                     continue;
                 }
-                let img = annotate(&blank, w, h, None, &info);
+                let img = annotate(&blank, w, h, None, &map_cfg, &info);
                 let _ = ka_tx.try_send((img, info.t_ms));
             }
         });
@@ -501,6 +618,7 @@ async fn run_camera(
                                     &cfg.coordinate,
                                 );
                                 sim.set_look(ex, ey);
+                                last_eye = Some((ex, ey));
                                 debug!("motion at ({:.2},{:.2}) → eye ({ex:.3},{ey:.3})",
                                     result.centroid_x, result.centroid_y);
                                 EyeState {
@@ -523,7 +641,15 @@ async fn run_camera(
                     if have_debug || have_pub {
                         let mut info = status.info(tx.receiver_count());
                         info.motion = last_result.is_some();
-                        let img = annotate(&buf, cfg.width, cfg.height, last_result.as_ref(), &info);
+                        info.eye = last_eye;
+                        let img = annotate(
+                            &buf,
+                            cfg.width,
+                            cfg.height,
+                            last_result.as_ref(),
+                            &cfg.coordinate,
+                            &info,
+                        );
                         // try_send: if the worker is behind, drop this frame
                         // rather than stalling the camera reader.
                         let _ = frame_tx.try_send((
