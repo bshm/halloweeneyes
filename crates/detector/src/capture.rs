@@ -18,7 +18,7 @@
 use crate::{coordinate::CoordinateMapConfig, motion::MotionConfig, simulation::EyeSimulation};
 use anyhow::{Context, Result};
 use image::{GrayImage, ImageFormat, Rgb, RgbImage};
-use imageproc::drawing::{draw_hollow_rect_mut, draw_line_segment_mut};
+use imageproc::drawing::{draw_hollow_rect_mut, draw_line_segment_mut, draw_text_mut};
 use imageproc::rect::Rect;
 use std::path::PathBuf;
 use shared::EyeState;
@@ -130,8 +130,45 @@ impl RtspPublisher {
     }
 }
 
-/// Draw bounding box and centroid on a copy of the raw frame.
-fn annotate(buf: &[u8], w: u32, h: u32, res: Option<&crate::motion::MotionResult>) -> RgbImage {
+/// Debug overlay content drawn onto each published frame.
+pub struct OverlayInfo {
+    pub t_ms: f64,
+    pub camera_age_ms: f64,
+    pub camera_restarts: u64,
+    pub clients: usize,
+    pub motion: bool,
+}
+
+fn font() -> Option<&'static ab_glyph::FontArc> {
+    use std::sync::OnceLock;
+    static FONT: OnceLock<Option<ab_glyph::FontArc>> = OnceLock::new();
+    FONT.get_or_init(|| {
+        for p in [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ] {
+            if let Ok(bytes) = std::fs::read(p) {
+                if let Ok(f) = ab_glyph::FontArc::try_from_vec(bytes) {
+                    return Some(f);
+                }
+            }
+        }
+        None
+    })
+    .as_ref()
+}
+
+fn utc_hms() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let s = secs % 86400;
+    format!("{:02}:{:02}:{:02}Z", s / 3600, (s % 3600) / 60, s % 60)
+}
+
+/// Draw bounding box, centroid and status text on a copy of the raw frame.
+fn annotate(buf: &[u8], w: u32, h: u32, res: Option<&crate::motion::MotionResult>, info: &OverlayInfo) -> RgbImage {
     let mut img = RgbImage::from_raw(w, h, buf.to_vec()).unwrap_or_else(|| RgbImage::new(w, h));
     if let Some(r) = res {
         let (x0, y0, x1, y1) = r.bbox;
@@ -143,6 +180,33 @@ fn annotate(buf: &[u8], w: u32, h: u32, res: Option<&crate::motion::MotionResult
         let (cx, cy) = (r.centroid_x as f32, r.centroid_y as f32);
         draw_line_segment_mut(&mut img, (cx - 6.0, cy), (cx + 6.0, cy), Rgb([255, 0, 0]));
         draw_line_segment_mut(&mut img, (cx, cy - 6.0), (cx, cy + 6.0), Rgb([255, 0, 0]));
+    }
+
+    if let Some(font) = font() {
+        let scale = ab_glyph::PxScale::from(12.0);
+        let white = Rgb([255, 255, 255]);
+        let lines = [
+            format!("{}  t={:.1}s", utc_hms(), info.t_ms / 1000.0),
+            format!(
+                "cam {}ms r{}  cl {}  m{}",
+                info.camera_age_ms as i64,
+                info.camera_restarts,
+                info.clients,
+                if info.motion { 1 } else { 0 }
+            ),
+        ];
+        for (i, line) in lines.iter().enumerate() {
+            let y = 2 + (i as i32) * 14;
+            // cheap legibility: dark backing strip
+            for dx in 0..(line.len() as u32 * 7).min(w) {
+                for dy in 0..12u32 {
+                    if y as u32 + dy < h {
+                        img.put_pixel(dx, y as u32 + dy, Rgb([0, 0, 0]));
+                    }
+                }
+            }
+            draw_text_mut(&mut img, white, 2, y, scale, font, line);
+        }
     }
     img
 }
@@ -294,6 +358,11 @@ async fn run_camera(
     let frame_bytes = (cfg.width * cfg.height * 3) as usize;
     let mut prev_gray: Option<GrayImage> = None;
     let mut last_result: Option<crate::motion::MotionResult> = None;
+    let mut camera_restarts: u64 = 0;
+    // Synthetic frame used when the camera delivers nothing, so the debug
+    // stream keeps flowing (status overlay still updates).
+    let blank = vec![0u8; frame_bytes];
+    let mut last_synthetic = Instant::now() - Duration::from_secs(1);
     let mut last_motion = Instant::now()
         .checked_sub(cfg.simulation_timeout)
         .unwrap_or(Instant::now());
@@ -384,7 +453,14 @@ async fn run_camera(
                     };
 
                     if have_debug || have_pub {
-                        let img = annotate(&buf, cfg.width, cfg.height, last_result.as_ref());
+                        let info = OverlayInfo {
+                            t_ms: start.elapsed().as_secs_f64() * 1000.0,
+                            camera_age_ms: last_frame.elapsed().as_secs_f64() * 1000.0,
+                            camera_restarts,
+                            clients: tx.receiver_count(),
+                            motion: last_result.is_some(),
+                        };
+                        let img = annotate(&buf, cfg.width, cfg.height, last_result.as_ref(), &info);
                         // try_send: if the worker is behind, drop this frame
                         // rather than stalling the camera reader.
                         let _ = frame_tx.try_send((
@@ -405,6 +481,27 @@ async fn run_camera(
                     }
                     if last_motion.elapsed() >= cfg.simulation_timeout {
                         target = sim.tick(Instant::now());
+                    }
+
+                    // No camera frame for 500 ms: publish a status frame instead
+                    // of letting the debug stream stall.
+                    if (have_debug || have_pub)
+                        && last_frame.elapsed() > Duration::from_millis(500)
+                        && last_synthetic.elapsed() >= Duration::from_millis(50)
+                    {
+                        last_synthetic = Instant::now();
+                        let info = OverlayInfo {
+                            t_ms: start.elapsed().as_secs_f64() * 1000.0,
+                            camera_age_ms: last_frame.elapsed().as_secs_f64() * 1000.0,
+                            camera_restarts,
+                            clients: tx.receiver_count(),
+                            motion: false,
+                        };
+                        let img = annotate(&blank, cfg.width, cfg.height, None, &info);
+                        let _ = frame_tx.try_send((
+                            img,
+                            start.elapsed().as_secs_f64() * 1000.0,
+                        ));
                     }
 
                     // Fixed-rate broadcast, independent of camera cadence: every
@@ -438,6 +535,7 @@ async fn run_camera(
         }
 
         reader.abort();
+        camera_restarts += 1;
         let _ = child.kill().await;
         let _ = child.wait().await;
         tokio::time::sleep(Duration::from_secs(2)).await;
