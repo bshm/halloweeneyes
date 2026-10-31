@@ -13,7 +13,8 @@ REPO=$(cd "$HERE/.." && pwd)
 SSH=(sshpass -p "${BOARD_PASSWORD:-radxa}" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/tmp/eyes_known_hosts -p "$PORT")
 SCP=(sshpass -p "${BOARD_PASSWORD:-radxa}" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/tmp/eyes_known_hosts -P "$PORT")
 
-"${SSH[@]}" "$HOST" 'sudo mkdir -p /opt/eyes/crates/frontend && sudo chown -R 1000:1000 /opt/eyes'
+"${SSH[@]}" "$HOST" 'sudo mkdir -p /opt/eyes/crates/frontend && sudo chown -R 1000:1000 /opt/eyes
+sudo timedatectl set-timezone Europe/Berlin 2>/dev/null || true'
 
 if [[ "$ROLE" == left ]]; then
   "${SCP[@]}" "$REPO/target/aarch64-unknown-linux-gnu/release/detector" "$HOST:/tmp/detector.new"
@@ -41,6 +42,7 @@ if [ "$ROLE" = left ]; then
   sudo install -m 644 /tmp/eyes-detector.service /etc/systemd/system/eyes-detector.service
 fi
 sudo chown -R 1000:1000 /opt/eyes
+sudo timedatectl set-timezone Europe/Berlin 2>/dev/null || true
 sudo systemctl daemon-reload
 sudo systemctl enable eyes-sshd eyes-kiosk >/dev/null
 if [ "$ROLE" = left ]; then

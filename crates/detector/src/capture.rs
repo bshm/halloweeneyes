@@ -21,6 +21,7 @@ use image::{GrayImage, ImageFormat, Rgb, RgbImage};
 use imageproc::drawing::{draw_hollow_rect_mut, draw_line_segment_mut, draw_text_mut};
 use imageproc::rect::Rect;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use shared::EyeState;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -134,9 +135,52 @@ impl RtspPublisher {
 pub struct OverlayInfo {
     pub t_ms: f64,
     pub camera_age_ms: f64,
+    pub camera_fps: f64,
     pub camera_restarts: u64,
     pub clients: usize,
     pub motion: bool,
+}
+
+/// Shared camera status, updated by the capture loop and read by the
+/// keep-alive task that keeps the debug stream alive during camera restarts.
+pub struct CameraStatus {
+    start: Instant,
+    last_real_ms: AtomicU64,
+    restarts: AtomicU64,
+    fps_milli: AtomicU64,
+}
+
+impl CameraStatus {
+    fn new() -> Self {
+        Self {
+            start: Instant::now(),
+            last_real_ms: AtomicU64::new(0),
+            restarts: AtomicU64::new(0),
+            fps_milli: AtomicU64::new(0),
+        }
+    }
+    fn mark_frame(&self) {
+        self.last_real_ms
+            .store(self.start.elapsed().as_millis() as u64, Ordering::Relaxed);
+    }
+    fn mark_restart(&self) {
+        self.restarts.fetch_add(1, Ordering::Relaxed);
+    }
+    fn set_fps(&self, fps: f64) {
+        self.fps_milli.store((fps * 1000.0) as u64, Ordering::Relaxed);
+    }
+    fn info(&self, clients: usize) -> OverlayInfo {
+        let now_ms = self.start.elapsed().as_millis() as u64;
+        let last = self.last_real_ms.load(Ordering::Relaxed);
+        OverlayInfo {
+            t_ms: now_ms as f64,
+            camera_age_ms: now_ms.saturating_sub(last) as f64,
+            camera_fps: self.fps_milli.load(Ordering::Relaxed) as f64 / 1000.0,
+            camera_restarts: self.restarts.load(Ordering::Relaxed),
+            clients,
+            motion: false,
+        }
+    }
 }
 
 fn font() -> Option<&'static ab_glyph::FontArc> {
@@ -158,13 +202,8 @@ fn font() -> Option<&'static ab_glyph::FontArc> {
     .as_ref()
 }
 
-fn utc_hms() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let s = secs % 86400;
-    format!("{:02}:{:02}:{:02}Z", s / 3600, (s % 3600) / 60, s % 60)
+fn local_hms() -> String {
+    chrono::Local::now().format("%H:%M:%S").to_string()
 }
 
 /// Draw bounding box, centroid and status text on a copy of the raw frame.
@@ -186,9 +225,10 @@ fn annotate(buf: &[u8], w: u32, h: u32, res: Option<&crate::motion::MotionResult
         let scale = ab_glyph::PxScale::from(12.0);
         let white = Rgb([255, 255, 255]);
         let lines = [
-            format!("{}  t={:.1}s", utc_hms(), info.t_ms / 1000.0),
+            format!("{}  t={:.1}s", local_hms(), info.t_ms / 1000.0),
             format!(
-                "cam {}ms r{}  cl {}  m{}",
+                "cam {:.1}fps {}ms r{} cl{} m{}",
+                info.camera_fps,
                 info.camera_age_ms as i64,
                 info.camera_restarts,
                 info.clients,
@@ -359,10 +399,30 @@ async fn run_camera(
     let mut prev_gray: Option<GrayImage> = None;
     let mut last_result: Option<crate::motion::MotionResult> = None;
     let mut camera_restarts: u64 = 0;
-    // Synthetic frame used when the camera delivers nothing, so the debug
-    // stream keeps flowing (status overlay still updates).
-    let blank = vec![0u8; frame_bytes];
-    let mut last_synthetic = Instant::now() - Duration::from_secs(1);
+    let status = Arc::new(CameraStatus::new());
+    if have_debug || have_pub {
+        // Runs independently of the camera process: keeps publishing status
+        // frames so mediamtx never sees a stall, even across restarts.
+        let ka_tx = frame_tx.clone();
+        let ka_status = status.clone();
+        let ka_tx_ws = tx.clone();
+        let blank = vec![0u8; frame_bytes];
+        let (w, h) = (cfg.width, cfg.height);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let info = ka_status.info(ka_tx_ws.receiver_count());
+                if info.camera_age_ms < 500.0 {
+                    continue;
+                }
+                let img = annotate(&blank, w, h, None, &info);
+                let _ = ka_tx.try_send((img, info.t_ms));
+            }
+        });
+    }
+    let mut fps_window_start = Instant::now();
+    let mut fps_frames: u32 = 0;
+    let mut camera_fps: f64 = 0.0;
     let mut last_motion = Instant::now()
         .checked_sub(cfg.simulation_timeout)
         .unwrap_or(Instant::now());
@@ -418,6 +478,14 @@ async fn run_camera(
                         break;
                     };
                     last_frame = Instant::now();
+                    fps_frames += 1;
+                    if fps_window_start.elapsed() >= Duration::from_secs(1) {
+                        camera_fps = fps_frames as f64 / fps_window_start.elapsed().as_secs_f64();
+                        fps_frames = 0;
+                        fps_window_start = Instant::now();
+                        status.set_fps(camera_fps);
+                    }
+                    status.mark_frame();
 
                     let gray = rgb24_to_gray(&buf, cfg.width, cfg.height);
                     let now = Instant::now();
@@ -453,13 +521,8 @@ async fn run_camera(
                     };
 
                     if have_debug || have_pub {
-                        let info = OverlayInfo {
-                            t_ms: start.elapsed().as_secs_f64() * 1000.0,
-                            camera_age_ms: last_frame.elapsed().as_secs_f64() * 1000.0,
-                            camera_restarts,
-                            clients: tx.receiver_count(),
-                            motion: last_result.is_some(),
-                        };
+                        let mut info = status.info(tx.receiver_count());
+                        info.motion = last_result.is_some();
                         let img = annotate(&buf, cfg.width, cfg.height, last_result.as_ref(), &info);
                         // try_send: if the worker is behind, drop this frame
                         // rather than stalling the camera reader.
@@ -483,26 +546,6 @@ async fn run_camera(
                         target = sim.tick(Instant::now());
                     }
 
-                    // No camera frame for 500 ms: publish a status frame instead
-                    // of letting the debug stream stall.
-                    if (have_debug || have_pub)
-                        && last_frame.elapsed() > Duration::from_millis(500)
-                        && last_synthetic.elapsed() >= Duration::from_millis(50)
-                    {
-                        last_synthetic = Instant::now();
-                        let info = OverlayInfo {
-                            t_ms: start.elapsed().as_secs_f64() * 1000.0,
-                            camera_age_ms: last_frame.elapsed().as_secs_f64() * 1000.0,
-                            camera_restarts,
-                            clients: tx.receiver_count(),
-                            motion: false,
-                        };
-                        let img = annotate(&blank, cfg.width, cfg.height, None, &info);
-                        let _ = frame_tx.try_send((
-                            img,
-                            start.elapsed().as_secs_f64() * 1000.0,
-                        ));
-                    }
 
                     // Fixed-rate broadcast, independent of camera cadence: every
                     // client sees the same phase, and the easing happens here
@@ -536,6 +579,7 @@ async fn run_camera(
 
         reader.abort();
         camera_restarts += 1;
+        status.mark_restart();
         let _ = child.kill().await;
         let _ = child.wait().await;
         tokio::time::sleep(Duration::from_secs(2)).await;
