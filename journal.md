@@ -393,14 +393,32 @@ returns with its reserved address.
 Lesson: never reboot a board immediately after an apt upgrade before checking
 `dpkg -l | grep -E '^i[^i]'` and that the DKMS module exists for `uname -r`.
 
-## 16. Open items
+## 16. Debug stream and calibration (implemented)
 
-- Automated setup script (idempotent) for card prep + deploy + verification.
-- Remove the Chromium remote-debugging port from the kiosk once verification is done.
-- Detector still exits if `ffmpeg` is missing (`Restart=always` → start limit).
-- `ffmpeg` software-decodes MPEG4 at ~49 % CPU on one core; H.264 stream or lower fps
-  would cut that.
-- Right-eye uses the same card image with `hostnamectl set-hostname right-eye`, no
-  `eyes-detector`, and a kiosk URL pointing at `http://192.168.42.92:8080/`.
-- `detector.env` holds camera credentials; `ps` still exposes them in `ExecStart`
-  expansion.
+- `GET /frame.jpg` serves the latest raw camera frame (encoded every 5th frame).
+- Annotated stream published to mediamtx: WebRTC `:8889/debug`, RTSP `:8554/debug`.
+- Overlay: local time, detector uptime, camera fps and frame age, restart count,
+  connected WS clients, motion flag; motion bbox and centroid; iso-lines of the
+  camera-to-eye mapping for `eye_x`/`eye_y` at -1/0/+1 (blue/yellow); eye-space
+  panel in the upper-right with the current gaze point.
+- Camera-loss continuity: 500 ms without a frame triggers status frames from a
+  keep-alive task that outlives the camera process; verified with a blackholed
+  camera route (10 frames during, 10 after) and a real camera reboot (~68 s).
+- Calibration: `/calib` page (click frame point, click eye pad, add sample,
+  fit & apply). Fitting solves the 5-coefficient per-axis polynomial by least
+  squares; applied live through a shared `RwLock`, persisted to
+  `/opt/eyes/calibration.json` (`EYES_CALIB_FILE` overrides), loaded at startup,
+  `reset` deletes it.
+- Publisher settings: Constrained Baseline, `yuv420p`, 500k/600k with 400k VBV,
+  GOP 10, paced to 20 fps (RGB input otherwise defaults to 4:4:4, which baseline
+  rejects and made the publisher restart-loop).
+
+## 17. Open items
+
+- Chromium still exposes DevTools on `127.0.0.1:9222` for verification; remove
+  when no longer needed.
+- Detector exits if `ffmpeg` is missing (`Restart=always` -> start limit).
+- `ffmpeg` software-decodes MPEG4 at ~49 % of one core; the camera's H.264 stream
+  or a lower capture fps would cut that.
+- Right-eye kiosk URL hardcodes `192.168.42.92`; a DHCP reservation plus a DNS
+  name (`left-eye.fritz.box`) would remove the dependency.

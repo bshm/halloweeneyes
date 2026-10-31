@@ -201,6 +201,61 @@ from the environment, so it never appears in `ps`.
 Full reproducible build/deploy record, timings and the failure modes found on the way:
 [journal.md](journal.md).
 
-## original project
+### debug stream
 
-https://github.com/bshm/halloweeneyes — c++/qt4/opencv, ~2016
+The detector publishes an annotated view of what it sees; this is the tool for
+tuning detection and calibration.
+
+```ini
+webRTC    http://<left-eye>:8889/debug        browser viewer
+rtsp      rtsp://<left-eye>:8554/debug        mpv / ffprobe / VLC (see note)
+```
+
+Overlay per frame, fixed-width fields:
+
+```
+<local time>  t=<detector uptime>s
+cam <fps>f  <frame age>ms r<restarts> c<clients> m<motion>
+```
+
+plus the motion bounding box (green), centroid (red cross), iso-lines of the
+camera-to-eye mapping (`eye_x` blue, `eye_y` yellow at -1/0/+1) and an eye-space
+panel in the upper-right with the current gaze point.
+
+The stream survives a camera outage: after 500 ms without frames the detector
+publishes status frames (black + overlay) and keeps reading the camera in the
+background, so viewers never stall and no manual restart is needed. A raw frame
+is also available at `http://<left-eye>:8080/frame.jpg`.
+
+VLC on Debian bookworm has no RTSP client (only `satip`) and mediamtx's HLS
+cookie check blocks its HLS path; use mpv or the browser. The MPEG-TS relay that
+existed for VLC has been removed.
+
+### calibration
+
+`http://<left-eye>:8080/calib` serves the latest camera frame and an eye-space
+pad. Click a camera point, click the gaze point it should produce, add the
+sample; repeat at 5-9 spread-out points, then `fit & apply`. The solver fits the
+5-coefficient per-axis polynomial by least squares and applies it live, so the
+iso-lines move immediately. Fits are stored in `/opt/eyes/calibration.json`
+(override with `EYES_CALIB_FILE`) and reloaded at startup; `reset` deletes the
+file and restores the built-in polynomial.
+
+### recording
+
+Recordings run on the control PC, not on the boards, and survive the recording
+client being killed by running as a detached user unit:
+
+```bash
+systemd-run --user --unit=eyes-rec --collect --   ffmpeg -rtsp_transport tcp -i rtsp://<left-eye>:8554/debug          -t 1800 -c copy -f segment -segment_time 300 -segment_format mpegts \
+         -reset_timestamps 1 <out>/debug-%03d.ts
+```
+
+Segments are plain MPEG-TS and individually playable; `cat debug-00*.ts > full.ts`
+also works.
+
+## original project (removed from the tree)
+
+https://github.com/bshm/halloweeneyes — c++/qt4/opencv, ~2016.
+The legacy C++ sources are no longer present in this tree; they remain reachable in
+the repository history.
