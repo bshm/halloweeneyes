@@ -1,0 +1,16 @@
+[Unit]
+Description=eyes sshd (independent of rsetup)
+After=network.target
+Wants=network.target
+
+[Service]
+ExecStart=/usr/sbin/sshd -D -e -p 22 -p 2222
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+Restart=on-failure
+RestartSec=2
+RuntimeDirectory=sshd
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target

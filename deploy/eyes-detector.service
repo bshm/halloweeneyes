@@ -1,0 +1,16 @@
+[Unit]
+Description=halloween eyes detector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=radxa
+WorkingDirectory=/opt/eyes
+EnvironmentFile=/opt/eyes/detector.env
+Environment=RUST_LOG=detector=info
+ExecStart=/opt/eyes/detector 0.0.0.0:8080 ${RTSP_URL}
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

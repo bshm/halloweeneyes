@@ -29,6 +29,10 @@ use tracing::{debug, info, warn};
 /// Target tick interval for simulation-only mode (~30 fps).
 const SIM_TICK_INTERVAL: Duration = Duration::from_millis(33);
 
+/// If ffmpeg produces no frame for this long, the stream is considered dead and
+/// the subprocess is restarted.
+const FRAME_STALL_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub struct CaptureConfig {
     /// RTSP source URL understood by ffmpeg. `None` = simulation-only mode.
     pub rtsp_url: Option<String>,
@@ -136,52 +140,65 @@ async fn run_camera(
 
         let mut stdout = child.stdout.take().context("no stdout on ffmpeg process")?;
         let mut buf = vec![0u8; frame_bytes];
+        let mut last_frame = Instant::now();
+        let mut ticker = tokio::time::interval(SIM_TICK_INTERVAL);
 
         loop {
-            match stdout.read_exact(&mut buf).await {
-                Ok(_) => {}
-                Err(e) => {
-                    warn!("ffmpeg read error: {e}, restarting");
-                    break;
+            tokio::select! {
+                read = stdout.read_exact(&mut buf) => {
+                    if let Err(e) = read {
+                        warn!("ffmpeg read error: {e}, restarting");
+                        break;
+                    }
+                    last_frame = Instant::now();
+
+                    let gray = rgb24_to_gray(&buf, cfg.width, cfg.height);
+                    let now = Instant::now();
+
+                    let state = if let Some(ref prev) = prev_gray {
+                        match crate::motion::detect_motion(prev, &gray, &cfg.motion) {
+                            Some(result) => {
+                                last_motion = now;
+                                let (ex, ey) = crate::coordinate::map_to_eye(
+                                    result.centroid_x,
+                                    result.centroid_y,
+                                    &cfg.coordinate,
+                                );
+                                sim.set_look(ex, ey);
+                                debug!("motion at ({:.2},{:.2}) → eye ({ex:.3},{ey:.3})",
+                                    result.centroid_x, result.centroid_y);
+                                EyeState {
+                                    look_x: ex,
+                                    look_y: ey,
+                                    blink_level: sim.tick(now).blink_level,
+                                    motion_detected: true,
+                                }
+                            }
+                            None => sim.tick(now),
+                        }
+                    } else {
+                        sim.tick(now)
+                    };
+
+                    prev_gray = Some(gray);
+                    let _ = tx.send(state);
+                }
+                _ = ticker.tick() => {
+                    // Keep the eye alive even when no frames arrive: after the
+                    // simulation timeout the autonomous animation takes over.
+                    if last_frame.elapsed() > FRAME_STALL_TIMEOUT {
+                        warn!("no frame for {:?} — restarting ffmpeg", last_frame.elapsed());
+                        break;
+                    }
+                    if last_motion.elapsed() >= cfg.simulation_timeout {
+                        let _ = tx.send(sim.tick(Instant::now()));
+                    }
                 }
             }
-
-            let gray = rgb24_to_gray(&buf, cfg.width, cfg.height);
-            let now = Instant::now();
-
-            let state = if let Some(ref prev) = prev_gray {
-                match crate::motion::detect_motion(prev, &gray, &cfg.motion) {
-                    Some(result) => {
-                        last_motion = now;
-                        let (ex, ey) = crate::coordinate::map_to_eye(
-                            result.centroid_x,
-                            result.centroid_y,
-                            &cfg.coordinate,
-                        );
-                        sim.set_look(ex, ey);
-                        debug!("motion at ({:.2},{:.2}) → eye ({ex:.3},{ey:.3})",
-                            result.centroid_x, result.centroid_y);
-                        EyeState {
-                            look_x: ex,
-                            look_y: ey,
-                            blink_level: sim.tick(now).blink_level,
-                            motion_detected: true,
-                        }
-                    }
-                    None => {
-                        let _ = last_motion; // suppress unused-variable warning when no motion
-                        sim.tick(now)
-                    }
-                }
-            } else {
-                sim.tick(now)
-            };
-
-            prev_gray = Some(gray);
-            let _ = tx.send(state);
         }
 
         let _ = child.kill().await;
+        let _ = child.wait().await;
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }

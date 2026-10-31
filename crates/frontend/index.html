@@ -22,34 +22,11 @@
             object-fit: contain;
             display: block;
         }
-        #fullscreen-btn {
-            position: fixed;
-            bottom: 16px;
-            right: 16px;
-            z-index: 10;
-            padding: 10px 16px;
-            background: rgba(255,255,255,0.15);
-            color: #fff;
-            border: 1px solid rgba(255,255,255,0.4);
-            border-radius: 6px;
-            font-size: 20px;
-            cursor: pointer;
-            backdrop-filter: blur(4px);
-        }
-        #fullscreen-btn:hover { background: rgba(255,255,255,0.25); }
-        :fullscreen #fullscreen-btn { display: none; }
     </style>
 </head>
 <body>
     <!-- trunk copies public/ assets to dist/ -->
     <link data-trunk rel="copy-dir" href="public" />
     <!-- trunk replaces this with the compiled WASM entry point -->
-    <button id="fullscreen-btn" title="Fullscreen">⛶</button>
-    <script>
-        document.getElementById('fullscreen-btn').addEventListener('click', function() {
-            var el = document.documentElement;
-            (el.requestFullscreen || el.webkitRequestFullscreen).call(el);
-        });
-    </script>
 </body>
 </html>

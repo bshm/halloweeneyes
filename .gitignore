@@ -2,3 +2,4 @@ target/
 dist/
 *.log
 scratchpad/
+*.img.xz

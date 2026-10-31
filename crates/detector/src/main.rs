@@ -19,11 +19,17 @@ async fn main() -> Result<()> {
         eprintln!("usage: detector <bind-addr> [rtsp-url]");
         eprintln!("  with camera:    detector 0.0.0.0:8080 rtsp://camera/live");
         eprintln!("  simulation only: detector 0.0.0.0:8080");
+        eprintln!("  or set RTSP_URL in the environment (keeps credentials out of argv)");
         std::process::exit(1);
     }
 
     let bind_addr = args[1].clone();
-    let rtsp_url: Option<String> = args.get(2).cloned();
+    // Prefer the environment so credentials never appear in `ps`/`/proc/cmdline`.
+    let rtsp_url: Option<String> = args
+        .get(2)
+        .cloned()
+        .or_else(|| std::env::var("RTSP_URL").ok())
+        .filter(|s| !s.trim().is_empty());
 
     info!("detector starting");
     if rtsp_url.is_none() {
