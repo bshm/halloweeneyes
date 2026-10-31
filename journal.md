@@ -366,7 +366,34 @@ Failure mode found: if the offset probe fails once (page load race), `offset` st
 the playhead sat before every sample and the eye pinned to the oldest one - frozen
 right eye. The probe now retries every 2 s on failure and refreshes every 30 s.
 
-## 15. Open items
+## 15. Incident: WiFi dead after apt upgrade (half-configured DKMS)
+
+Symptom: board powered, Ethernet LED fine, but no address on WiFi; USB WiFi present
+as `a69c:8d80` (firmware download mode) instead of `a69c:8d81`, no `wlan0`, and
+`/lib/modules/<kver>/updates/dkms` had no `aic*` modules.
+
+Cause: `apt upgrade` pulled new `aic8800-usb-dkms` / `aic8800-firmware` /
+`radxa-system-config-aic8800-usb-dkms` and left them in state `iU` (unpacked, not
+configured). The DKMS module was therefore never built for the running kernel. WiFi
+kept working until the next reboot because the old module was already loaded.
+
+Fix, over Ethernet:
+
+```bash
+sudo dpkg --configure -a            # rebuilds aic8800-usb via DKMS (several minutes)
+ls /lib/modules/$(uname -r)/updates/dkms/aic*   # expect aic8800_fdrv_usb, aic_load_fw_usb, ...
+sudo modprobe aic_load_fw_usb
+# re-enumerate so the device leaves download mode:
+sudo sh -c 'echo 0 > /sys/bus/usb/devices/3-1.4/authorized; sleep 1; echo 1 > /sys/bus/usb/devices/3-1.4/authorized'
+```
+
+Result: `usb ... idProduct=8d81`, `aicwf_usb_chipmatch USE AIC8800D80`, `wlan0`
+returns with its reserved address.
+
+Lesson: never reboot a board immediately after an apt upgrade before checking
+`dpkg -l | grep -E '^i[^i]'` and that the DKMS module exists for `uname -r`.
+
+## 16. Open items
 
 - Automated setup script (idempotent) for card prep + deploy + verification.
 - Remove the Chromium remote-debugging port from the kiosk once verification is done.
