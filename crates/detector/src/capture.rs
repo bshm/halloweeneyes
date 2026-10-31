@@ -71,6 +71,8 @@ struct RtspPublisher {
     stdin: tokio::process::ChildStdin,
     url: String,
     last_error: Instant,
+    last_write: Instant,
+    interval: Duration,
 }
 
 impl RtspPublisher {
@@ -82,7 +84,8 @@ impl RtspPublisher {
                 "-s", &format!("{w}x{h}"), "-r", &fps.to_string(),
                 "-i", "-",
                 "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-                "-b:v", "900k", "-g", "20",
+                "-b:v", "900k", "-g", "20", "-keyint_min", "20", "-sc_threshold", "0",
+                "-fps_mode", "cfr",
                 "-f", "rtsp", "-rtsp_transport", "tcp", &url,
             ])
             .stdin(std::process::Stdio::piped())
@@ -92,11 +95,25 @@ impl RtspPublisher {
             .ok()?;
         let stdin = child.stdin.take()?;
         info!("rtsp debug publisher -> {url}");
-        Some(Self { child, stdin, url, last_error: Instant::now() })
+        Some(Self {
+            child,
+            stdin,
+            url,
+            last_error: Instant::now(),
+            last_write: Instant::now() - Duration::from_secs(1),
+            interval: Duration::from_millis(1000 / fps.max(1) as u64),
+        })
     }
 
     async fn write(&mut self, w: u32, h: u32, rgb: &[u8]) {
         use tokio::io::AsyncWriteExt;
+        // Pace to a constant frame rate: the camera delivers 25-30 fps, the
+        // encoder is configured for 20. Writing every frame declares a stream
+        // that is not CFR and breaks inter-frame references.
+        if self.last_write.elapsed() < self.interval {
+            return;
+        }
+        self.last_write = Instant::now();
         if self.stdin.write_all(rgb).await.is_err() {
             if self.last_error.elapsed() > Duration::from_secs(5) {
                 warn!("rtsp publisher to {} failed, restarting", self.url);
@@ -249,6 +266,28 @@ async fn run_camera(
         }
         _ => None,
     };
+
+    // Frames for the debug/publish path are handed to a worker. Encoding and
+    // socket writes must never block the task that drains the camera pipe: if
+    // they do, ffmpeg stalls, RTP packets are lost and the decoder emits torn
+    // (vertically rolled) frames.
+    let (frame_tx, mut frame_rx) = tokio::sync::mpsc::channel::<(RgbImage, f64)>(2);
+    let have_debug = debug_sink.is_some();
+    let have_pub = publisher.is_some();
+    let mut debug_sink_worker = debug_sink.take();
+    let mut publisher_worker = publisher.take();
+    let width = cfg.width;
+    let height = cfg.height;
+    tokio::spawn(async move {
+        while let Some((img, t_ms)) = frame_rx.recv().await {
+            if let Some(sink) = debug_sink_worker.as_mut() {
+                sink.write(&img, t_ms);
+            }
+            if let Some(p) = publisher_worker.as_mut() {
+                p.write(width, height, img.as_raw()).await;
+            }
+        }
+    });
     let mut sim = EyeSimulation::new(crate::simulation::SimConfig::default());
     let frame_bytes = (cfg.width * cfg.height * 3) as usize;
     let mut prev_gray: Option<GrayImage> = None;
@@ -281,17 +320,32 @@ async fn run_camera(
             .context("failed to spawn ffmpeg — is it installed?")?;
 
         let mut stdout = child.stdout.take().context("no stdout on ffmpeg process")?;
-        let mut buf = vec![0u8; frame_bytes];
         let mut last_frame = Instant::now();
         let mut ticker = tokio::time::interval(SIM_TICK_INTERVAL);
 
+        // read_exact is not cancellation-safe: doing it inside select! with the
+        // ticker drops partially read bytes, shifting every later frame. A
+        // dedicated task owns the reads; the loop only receives whole frames.
+        let (raw_tx, mut raw_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(2);
+        let reader = tokio::spawn(async move {
+            let mut buf = vec![0u8; frame_bytes];
+            loop {
+                if stdout.read_exact(&mut buf).await.is_err() {
+                    break;
+                }
+                if raw_tx.send(buf.clone()).await.is_err() {
+                    break;
+                }
+            }
+        });
+
         loop {
             tokio::select! {
-                read = stdout.read_exact(&mut buf) => {
-                    if let Err(e) = read {
-                        warn!("ffmpeg read error: {e}, restarting");
+                frame = raw_rx.recv() => {
+                    let Some(buf) = frame else {
+                        warn!("ffmpeg stream ended, restarting");
                         break;
-                    }
+                    };
                     last_frame = Instant::now();
 
                     let gray = rgb24_to_gray(&buf, cfg.width, cfg.height);
@@ -299,7 +353,7 @@ async fn run_camera(
 
                     let state = if let Some(ref prev) = prev_gray {
                         match crate::motion::detect_motion(prev, &gray, &cfg.motion) {
-                            Some(result) => {
+                            Some(result) if result.area < (cfg.width * cfg.height) / 2 => {
                                 last_result = Some(result.clone());
                                 last_motion = now;
                                 let (ex, ey) = crate::coordinate::map_to_eye(
@@ -318,7 +372,7 @@ async fn run_camera(
                                     motion_detected: true,
                                 }
                             }
-                            None => {
+                            _ => {
                                 last_result = None;
                                 sim.tick(now)
                             }
@@ -327,14 +381,14 @@ async fn run_camera(
                         sim.tick(now)
                     };
 
-                    if debug_sink.is_some() || publisher.is_some() {
+                    if have_debug || have_pub {
                         let img = annotate(&buf, cfg.width, cfg.height, last_result.as_ref());
-                        if let Some(sink) = debug_sink.as_mut() {
-                            sink.write(&img, start.elapsed().as_secs_f64() * 1000.0);
-                        }
-                        if let Some(pubr) = publisher.as_mut() {
-                            pubr.write(cfg.width, cfg.height, img.as_raw()).await;
-                        }
+                        // try_send: if the worker is behind, drop this frame
+                        // rather than stalling the camera reader.
+                        let _ = frame_tx.try_send((
+                            img,
+                            start.elapsed().as_secs_f64() * 1000.0,
+                        ));
                     }
 
                     prev_gray = Some(gray);
@@ -381,6 +435,7 @@ async fn run_camera(
             }
         }
 
+        reader.abort();
         let _ = child.kill().await;
         let _ = child.wait().await;
         tokio::time::sleep(Duration::from_secs(2)).await;

@@ -46,6 +46,20 @@ pub struct MotionResult {
     pub bbox: (u32, u32, u32, u32),
 }
 
+/// Median pixel value, used to estimate and remove the global difference.
+fn median_u8(img: &GrayImage) -> u8 {
+    let mut hist = [0u32; 256];
+    for p in img.pixels() { hist[p[0] as usize] += 1; }
+    let total = (img.width() * img.height()) as u32;
+    let half = total / 2;
+    let mut acc = 0u32;
+    for (v, c) in hist.iter().enumerate() {
+        acc += *c;
+        if acc >= half { return v as u8; }
+    }
+    0
+}
+
 /// Computes the absolute per-pixel difference between two same-size grayscale images.
 pub fn absdiff(a: &GrayImage, b: &GrayImage) -> GrayImage {
     assert_eq!(a.dimensions(), b.dimensions(), "absdiff: dimension mismatch");
@@ -182,7 +196,14 @@ pub fn detect_motion(
     current: &GrayImage,
     cfg: &MotionConfig,
 ) -> Option<MotionResult> {
+    // Remove the global component of the difference: auto-exposure and white
+    // balance changes move every pixel at once, which otherwise shows up as a
+    // full-frame "motion" region and drags the centroid to the image centre.
     let diff = absdiff(prev, current);
+    let median = median_u8(&diff);
+    let diff = GrayImage::from_fn(diff.width(), diff.height(), |x, y| {
+        Luma([diff.get_pixel(x, y)[0].saturating_sub(median)])
+    });
     let threshed = threshold(&diff, cfg.sensitivity);
     let blurred = box_blur(&threshed, cfg.blur_size);
     let threshed2 = threshold(&blurred, cfg.sensitivity);
