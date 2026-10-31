@@ -1,0 +1,21 @@
+[build]
+target = "index.html"
+dist = "dist"
+public_url = "/"
+
+[serve]
+address = "0.0.0.0"
+port = 8081
+
+[watch]
+ignore = ["dist"]
+
+# Dev-mode proxies
+# /log  — forward frontend diagnostic logs to the detector (HTTP)
+# /ws   — WebSocket proxy; use http:// scheme, trunk handles the upgrade
+[[proxy]]
+backend = "http://localhost:8080/log"
+
+[[proxy]]
+backend = "ws://localhost:8080/ws"
+ws = true

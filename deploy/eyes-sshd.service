@@ -1,0 +1,19 @@
+[Unit]
+Description=eyes sshd (independent of rsetup)
+After=network.target
+Conflicts=ssh.service ssh.socket
+Wants=network.target
+
+[Service]
+# rsetup can stop ssh.service and remove /run/sshd; never depend on it
+ExecStartPre=/usr/bin/install -d -m 0755 /run/sshd
+ExecStart=/usr/sbin/sshd -D -e -p 22 -p 2222
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+Restart=on-failure
+RestartSec=2
+RuntimeDirectory=sshd
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target

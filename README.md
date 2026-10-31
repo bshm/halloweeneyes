@@ -1,102 +1,206 @@
-# halloweeneyes
+# halloween eyes — rewrite
 
-[![Build Status](https://www.travis-ci.com/bshm/halloweeneyes.svg?branch=master)](https://www.travis-ci.com/bshm/halloweeneyes)
-[![Sonarcloud](https://sonarcloud.io/api/project_badges/measure?project=bshm_halloweeneyes&metric=alert_status)](https://sonarcloud.io/component_measures?id=bshm_halloweeneyes)
-[![BCH compliance](https://bettercodehub.com/edge/badge/bshm/halloweeneyes?branch=master)](https://bettercodehub.com/)
+projection of animated moving eyes onto windows.
+a camera tracks motion in front of the house and makes the eyes follow.
 
+## architecture
 
-Code for projecting moving eyes to windows
-
-This is code to project scary looking moving eyes to the inside of windows.
-A camera tracks the movement in front of the house and makes the eyes
-follow people moving in front of the house
-
-![alt text](demo.jpg "Example Image")
-
-## Architecture
-
-The components are
-- Two windows to project on
-- IP RTSP camera (e.g. AVTECH AVN812)
-- motion detection software (qtmotion)
-- eye rendering software (qteye)
-- 2 single board computers with HDMI connector (Raspberry Pi or Beaglebone Black)
-- 2 LED beamers used for projection
-
-The qtmotion software obtains an RTSP video stream from the camera and tries to detect motion in successive video frames.
-It also contains an EyeSimulation that generates eye movement and lid movement if no motion is detected.
-qtmotion broadcasts the eye movement data using UDP multicast to all running qteye instances in the local ethernet.
-qteye picks up this data and renders the eye accoringly.
-The eye rendering consist of simple overlying of the background image and an iris picture to generate the impression of
-upper and lower lids and a moving eye.
-
-I used this with Beaglebone Black and Raspberry PI (rendering) and on a Debian wheezy server (motion detection).
-
-## Prerequisites
-- IP webcam (RTSP) that works reasonably well at night
-- Two Linux computers (Beaglebone, Raspberry PI, x86) with video outputs. Probably a single PC with multiple video outputs works as well.
-- Two projectors
-
-## Setup
-
-### Setup of qtmotion
-- start a screen session
-- execute
-./qtmotion rtsp://admin:admin@192.168.42.33/live/h264/QVGA capture-2016-10-30-22-30.av
-The first parameter is the URL of the RTSP stream as understood by opencv, the second parameter is the name of an
-output file for debuuging motion detection
-
-### Setup on beaglebone black
-- download bone-debian-8.4-lxqt-4gb-armhf-2016-05-13-4gb.img
-- remove unnecessary stuff from image:
-- sudo apt purge locales ti-llvm-3.3 chromium-browser firmware-am57xx-opencl-monitor nodejs oxygen-icon-theme ti-opencl chromium-browser-l10n adwaita-icon-theme apache2 apache2-bin apache2-data apache2-utils
-- sudo apt-get autoremove
-- sudo apt-get update
-- sudo apt-get install build-essential cmake libopencv-dev libqt4-private-dev x11-xserver-utils
-- sudo apt-get upgrade
-
-#### Compilation
-- clone this repository
-- cd /home/debian
-- git clone https://github.com/bshm/halloweeneyes.git
-- cd halloweeneyes
-- cmake .
-- make
-
-#### Autostart, Resolution, ...
-uEnv.txt change kernel command line to 800x600 and don't start X server
-- cmdline=coherent_pool=1M quiet cape_universal=enable video=HDMI-A-1:800x600@60 text
-
-- Autostart
-/etc/rc.local
-Add 
-sudo /home/default/halloweeneyes/start.sh 
-before "exit 0"
-
-- /etc/X11/xorg.conf
-disable screensaver and dpms by setting timeouts to zero
-
-### Tuning
-
-The code contains quite a lot hardcoded information
-- The background images
-- The size of the eye images (BG, IRIS) are expected to be 800x600. Lots of hardcoded coordinates inside qteye.
-- The multicast group is hardcoded somewhere
-- The mapping from camera coordinates (320x200) to eye coordinates ([-1..1], [-1..1]) is hardcoded in QtMotion.cpp
-
-For coordinates pairs inside the image file have been picked to map to the extreme positions of the eye balls.
-
-Those functions have been generated using wolfram alpha:
-- http://www.wolframalpha.com/input/?i=xfun%3DInterpolatingPolynomial%5B%7B%7B%7B285.0,116%7D,+-1%7D,%7B%7B940,77%7D,+1%7D,%7B%7B110,587%7D,+-1%7D,+%7B%7B1087,504%7D,+1%7D,+%7B%7B600,298%7D,0%7D%7D,%7Bx,y%7D%5D%2F%2FN
-- http://www.wolframalpha.com/input/?i=yfun%3DInterpolatingPolynomial%5B%7B%7B%7B285,116%7D,+0%7D,%7B%7B940,77%7D,+0%7D,%7B%7B110,587%7D,+1%7D,+%7B%7B1087,504%7D,+1%7D,+%7B%7B600,298%7D,0.5%7D%7D,%7Bx,y%7D%5D%2F%2FN
-
-The camera coordinates used for this mapping still use (1024x1280)
-
-
-```C++
-const double xEye = -2.10554+x_1280 * (0.00362959 -2.89324E-7 * x_1280-2.24893E-6 * y_1024)+0.00145656 * y_1024;
-const double yEye = -0.383554+x_1280 * (0.000500975 -3.04759E-7 * x_1280+1.12333E-7 * y_1024)+0.00225704 * y_1024;
+```
+┌──────────────────────────────────────────────────────────┐
+│  ip camera (rtsp)                                        │
+└─────────────────────┬────────────────────────────────────┘
+                      │ rtsp stream (ffmpeg subprocess)
+┌─────────────────────▼────────────────────────────────────┐
+│  detector  (rust binary)                                 │
+│                                                          │
+│  capture → motion detection → coordinate mapping         │
+│                  ↓ (no motion for 2s)                    │
+│             eye simulation (autonomous animation)        │
+│                  ↓                                       │
+│  axum websocket server  →  EyeState JSON broadcasts      │
+└─────────────────────┬────────────────────────────────────┘
+                      │ ws://host/ws
+         ┌────────────┴───────────┐
+         │                        │
+┌────────▼──────┐        ┌────────▼──────┐
+│  browser      │        │  browser      │
+│  (left eye)   │        │  (right eye)  │
+│  leptos+wgpu  │        │  leptos+wgpu  │
+└───────────────┘        └───────────────┘
 ```
 
-![alt text](BG.png "Background picture")
-![alt text](IRIS.png "Iris picture")
+**detector** — runs on any linux/mac/windows host with ffmpeg and an ip camera.
+
+**frontend** — wasm compiled from rust via trunk; renders in firefox and chrome
+using the webgl2 backend of wgpu. the same code compiles natively for a future
+tauri standalone application.
+
+## prerequisites
+
+| tool | install |
+|---|---|
+| rust 1.89+ | https://rustup.rs |
+| wasm32 target | `rustup target add wasm32-unknown-unknown` |
+| trunk | `cargo install trunk` |
+| ffmpeg | `sudo apt install ffmpeg` / `brew install ffmpeg` |
+| ip camera | any camera with an rtsp endpoint |
+
+## build
+
+### detector
+
+```sh
+cargo build --release -p detector
+```
+
+binary: `target/release/detector`
+
+### frontend
+
+```sh
+cd crates/frontend
+trunk build --release
+```
+
+output: `crates/frontend/dist/`
+
+## run
+
+### start the detector
+
+```sh
+./target/release/detector <bind-addr> [rtsp-url]
+```
+
+with camera:
+```sh
+./target/release/detector 0.0.0.0:8080 rtsp://admin:admin@192.168.1.33/live/h264
+```
+
+simulation-only (no camera required):
+```sh
+./target/release/detector 0.0.0.0:8080
+```
+
+the detector:
+- opens the rtsp stream via ffmpeg
+- runs the motion detection pipeline
+- falls back to autonomous eye simulation after 2 s of no motion
+- serves the frontend at `http://<bind-addr>/`
+- broadcasts eye state over websocket at `ws://<bind-addr>/ws`
+
+### open the renderer
+
+open `http://<host>:8080` in firefox or chrome.
+open on multiple screens / devices to render multiple eyes simultaneously — each
+browser tab receives the same eye state from the websocket broadcast.
+
+### development mode (frontend hot-reload)
+
+```sh
+# terminal 1 — run detector in simulation-only mode (or pass rtsp-url as second arg)
+./target/release/detector 0.0.0.0:8080
+
+# terminal 2 — trunk dev server with hot-reload
+cd crates/frontend
+trunk serve --port 8081
+```
+
+open `http://localhost:8081`.
+
+## assets
+
+`crates/frontend/public/` contains the eye imagery ported from the original project:
+
+| file | size | description |
+|---|---|---|
+| `BG.png` | 2000×2000 px RGBA | background / eyelid mask |
+| `IRIS.png` | 2000×2000 px RGBA | iris overlay |
+
+the current wgpu shader renders a procedural eye; texture sampling from these
+images is the next implementation step.
+
+## project layout
+
+```
+Cargo.toml                       workspace root
+crates/
+  shared/                        EyeState + ServerMessage types
+  detector/
+    src/
+      coordinate.rs              camera-to-eye polynomial mapping
+      motion.rs                  frame-diff motion detection pipeline
+      simulation.rs              autonomous eye/blink animation
+      capture.rs                 async ffmpeg rtsp reader
+      server.rs                  axum websocket broadcaster
+      main.rs                    entry point
+  frontend/
+    public/
+      BG.png                     eyelid mask (from original project)
+      IRIS.png                   iris image (from original project)
+    src/
+      lib.rs                     leptos app component
+      transport.rs               EyeStateSource trait (websocket impl)
+      render.rs                  wgpu renderer (webgl2 / native)
+      eye.wgsl                   wgsl shader
+    index.html                   trunk entry point
+    Trunk.toml                   trunk configuration
+```
+
+## tauri (future)
+
+the `EyeStateSource` trait in `crates/frontend/src/transport.rs` abstracts the
+transport. swap `WebSocketSource` for a native tauri ipc implementation and the
+rendering code requires no changes.
+
+## deployment (ROCK 4D, headless kiosk)
+
+Two boards, one detector: `left-eye` runs the detector and talks to the camera,
+`right-eye` only renders the state broadcast by the left eye.
+
+```sh
+# build detector (aarch64) + wasm frontend
+just build
+
+# check the image archive
+just image-check
+
+# write a card and prepare it
+just flash-left  /dev/sdX                # detector + kiosk on this card
+just flash-right /dev/sdX                # kiosk only, points at left-eye
+
+# or step by step
+just flash /dev/sdX
+export WIFI_PSK=...                      # never stored in the repo
+just card-left  /dev/sdX host=left-eye
+just card-right /dev/sdX host=right-eye
+
+# configure WiFi on a board that is already running
+just wifi host=radxa@192.168.42.92 ssid=TODOFixLater psk=...
+
+# push freshly built artefacts to a running board
+just deploy left
+just deploy right
+just verify
+just verify-camera
+```
+
+What lands on the card:
+
+| piece | left-eye | right-eye |
+|---|---|---|
+| `eyes-detector.service` (camera + websocket) | yes | no |
+| `eyes-kiosk.service` (`xinit` + Chromium kiosk) | yes | yes |
+| `eyes-sshd.service` (survives `rsetup`) | yes | yes |
+| kiosk URL | `http://127.0.0.1:8080/` | `http://192.168.42.92:8080/` |
+
+Secrets: the WiFi key is templated (`deploy/wifi.nmconnection.tmpl`) and injected at
+prepare time; the camera URL lives in `/opt/eyes/detector.env` (mode 600) and is read
+from the environment, so it never appears in `ps`.
+
+Full reproducible build/deploy record, timings and the failure modes found on the way:
+[journal.md](journal.md).
+
+## original project
+
+https://github.com/bshm/halloweeneyes — c++/qt4/opencv, ~2016
