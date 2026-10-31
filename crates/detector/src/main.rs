@@ -1,5 +1,8 @@
 use anyhow::Result;
-use detector::{capture, server};
+use detector::capture;
+use detector::server::{self, CalibState};
+use detector::coordinate::CoordinateMapConfig;
+use std::sync::{Mutex, RwLock};
 use shared::EyeState;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -39,13 +42,20 @@ async fn main() -> Result<()> {
     let (tx, _rx) = broadcast::channel::<EyeState>(64);
     let tx = Arc::new(tx);
 
-    let capture_tx = tx.clone();
+    let calib = CalibState {
+        map: Arc::new(RwLock::new(CoordinateMapConfig::default())),
+        samples: Arc::new(Mutex::new(Vec::new())),
+        frame: Arc::new(Mutex::new(None)),
+    };
 
+    let capture_tx = tx.clone();
+    let capture_map = calib.map.clone();
+    let capture_frame = calib.frame.clone();
     let capture_handle = tokio::spawn(async move {
-        capture::run(rtsp_url, capture_tx).await
+        capture::run(rtsp_url, capture_tx, capture_map, capture_frame).await
     });
 
-    let server_handle = tokio::spawn(server::run(bind_addr, tx));
+    let server_handle = tokio::spawn(server::run(bind_addr, tx, calib));
 
     tokio::select! {
         res = capture_handle => { res??; }

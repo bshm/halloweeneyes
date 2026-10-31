@@ -22,6 +22,7 @@ use imageproc::drawing::{draw_hollow_rect_mut, draw_line_segment_mut, draw_text_
 use imageproc::rect::Rect;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, RwLock};
 use shared::EyeState;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -421,11 +422,13 @@ pub fn simulation_tick(sim: &mut EyeSimulation<impl rand::Rng>, now: Instant) ->
 pub async fn run(
     rtsp_url: Option<String>,
     tx: Arc<broadcast::Sender<EyeState>>,
+    map: Arc<RwLock<crate::coordinate::CoordinateMapConfig>>,
+    frame_store: Arc<Mutex<Option<Vec<u8>>>>,
 ) -> Result<()> {
     let cfg = CaptureConfig::new(rtsp_url);
     match &cfg.rtsp_url {
         None => run_simulation_only(cfg, tx).await,
-        Some(_) => run_camera(cfg, tx).await,
+        Some(_) => run_camera(cfg, tx, map, frame_store).await,
     }
 }
 
@@ -463,6 +466,8 @@ async fn run_simulation_only(
 async fn run_camera(
     cfg: CaptureConfig,
     tx: Arc<broadcast::Sender<EyeState>>,
+    map: Arc<RwLock<crate::coordinate::CoordinateMapConfig>>,
+    frame_store: Arc<Mutex<Option<Vec<u8>>>>,
 ) -> Result<()> {
     let rtsp_url = cfg.rtsp_url.clone().unwrap();
     info!("camera mode: rtsp_url={}", rtsp_url);
@@ -514,6 +519,7 @@ async fn run_camera(
     let mut prev_gray: Option<GrayImage> = None;
     let mut last_result: Option<crate::motion::MotionResult> = None;
     let mut last_eye: Option<(f64, f64)> = None;
+    let mut frames_seen: u64 = 0;
     let mut camera_restarts: u64 = 0;
     let status = Arc::new(CameraStatus::new());
     if have_debug || have_pub {
@@ -524,7 +530,7 @@ async fn run_camera(
         let ka_tx_ws = tx.clone();
         let blank = vec![0u8; frame_bytes];
         let (w, h) = (cfg.width, cfg.height);
-        let map_cfg = cfg.coordinate.clone();
+        let map_arc = map.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -532,6 +538,7 @@ async fn run_camera(
                 if info.camera_age_ms < 500.0 {
                     continue;
                 }
+                let map_cfg = map_arc.read().unwrap().clone();
                 let img = annotate(&blank, w, h, None, &map_cfg, &info);
                 let _ = ka_tx.try_send((img, info.t_ms));
             }
@@ -612,10 +619,11 @@ async fn run_camera(
                             Some(result) if result.area < (cfg.width * cfg.height) / 2 => {
                                 last_result = Some(result.clone());
                                 last_motion = now;
+                                let map_cfg = map.read().unwrap().clone();
                                 let (ex, ey) = crate::coordinate::map_to_eye(
                                     result.centroid_x,
                                     result.centroid_y,
-                                    &cfg.coordinate,
+                                    &map_cfg,
                                 );
                                 sim.set_look(ex, ey);
                                 last_eye = Some((ex, ey));
@@ -638,16 +646,28 @@ async fn run_camera(
                         sim.tick(now)
                     };
 
+                    frames_seen += 1;
+                    if frames_seen % 5 == 0 {
+                        if let Some(raw) = RgbImage::from_raw(cfg.width, cfg.height, buf.clone()) {
+                            let mut jpeg = Vec::new();
+                            let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 80);
+                            if enc.encode_image(&raw).is_ok() {
+                                *frame_store.lock().unwrap() = Some(jpeg);
+                            }
+                        }
+                    }
+
                     if have_debug || have_pub {
                         let mut info = status.info(tx.receiver_count());
                         info.motion = last_result.is_some();
                         info.eye = last_eye;
+                        let map_cfg = map.read().unwrap().clone();
                         let img = annotate(
                             &buf,
                             cfg.width,
                             cfg.height,
                             last_result.as_ref(),
-                            &cfg.coordinate,
+                            &map_cfg,
                             &info,
                         );
                         // try_send: if the worker is behind, drop this frame

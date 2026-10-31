@@ -12,7 +12,7 @@
 ///
 /// Defaults match the original calibration.  Override for a different camera
 /// placement by re-calibrating the polynomial coefficients.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CoordinateMapConfig {
     /// Capture width fed into the pipeline (pixels).
     pub capture_width: u32,
@@ -38,7 +38,7 @@ pub struct CoordinateMapConfig {
 ///        + x * (c1 + c2*x + c3*y)
 ///        + c4*y
 /// ```
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PolyCoeffs {
     pub c0: f64,
     pub c1: f64,
@@ -77,6 +77,78 @@ impl Default for CoordinateMapConfig {
             },
         }
     }
+}
+
+impl PolyCoeffs {
+    pub fn from_slice(c: &[f64; 5]) -> Self {
+        Self { c0: c[0], c1: c[1], c2: c[2], c3: c[3], c4: c[4] }
+    }
+    pub fn to_slice(&self) -> [f64; 5] {
+        [self.c0, self.c1, self.c2, self.c3, self.c4]
+    }
+}
+
+/// Least-squares fit of `eye = c0 + c1*x + c2*x^2 + c3*x*y + c4*y` to
+/// `(x, y) -> target` samples. Returns `None` if the system is singular
+/// (fewer than 5 independent points or degenerate geometry).
+pub fn fit_poly(samples: &[(f64, f64, f64)]) -> Option<PolyCoeffs> {
+    if samples.len() < 5 {
+        return None;
+    }
+    // Normal equations A^T A c = A^T b for the 5 basis functions.
+    let mut ata = [[0.0f64; 5]; 5];
+    let mut atb = [0.0f64; 5];
+    for &(x, y, t) in samples {
+        let row = [1.0, x, x * x, x * y, y];
+        for i in 0..5 {
+            for j in 0..5 {
+                ata[i][j] += row[i] * row[j];
+            }
+            atb[i] += row[i] * t;
+        }
+    }
+    // Gaussian elimination with partial pivoting.
+    let mut m = [[0.0f64; 6]; 5];
+    for i in 0..5 {
+        for j in 0..5 {
+            m[i][j] = ata[i][j];
+        }
+        m[i][5] = atb[i];
+    }
+    for col in 0..5 {
+        let mut piv = col;
+        for r in col..5 {
+            if m[r][col].abs() > m[piv][col].abs() {
+                piv = r;
+            }
+        }
+        if m[piv][col].abs() < 1e-12 {
+            return None;
+        }
+        m.swap(col, piv);
+        let d = m[col][col];
+        for j in col..6 {
+            m[col][j] /= d;
+        }
+        for r in 0..5 {
+            if r != col {
+                let f = m[r][col];
+                if f != 0.0 {
+                    for j in col..6 {
+                        m[r][j] -= f * m[col][j];
+                    }
+                }
+            }
+        }
+    }
+    let mut c = [0.0f64; 5];
+    for i in 0..5 {
+        c[i] = m[i][5];
+    }
+    if c.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
+    Some(PolyCoeffs::from_slice(&c))
 }
 
 /// Maps a camera pixel `(px, py)` (in capture resolution) to a normalised
