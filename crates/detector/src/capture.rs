@@ -84,7 +84,9 @@ impl RtspPublisher {
                 "-s", &format!("{w}x{h}"), "-r", &fps.to_string(),
                 "-i", "-",
                 "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-                "-b:v", "900k", "-g", "20", "-keyint_min", "20", "-sc_threshold", "0",
+                "-profile:v", "baseline", "-level", "3.0", "-pix_fmt", "yuv420p",
+                "-b:v", "500k", "-maxrate", "600k", "-bufsize", "400k",
+                "-g", "10", "-keyint_min", "10", "-sc_threshold", "0",
                 "-fps_mode", "cfr",
                 "-f", "rtsp", "-rtsp_transport", "tcp", &url,
             ])
