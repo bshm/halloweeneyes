@@ -96,6 +96,7 @@ fn start_render_loop() {
                 let _ = js_sys::Reflect::set(&obj, &"look_x".into(), &rs.current.look_x.into());
                 let _ = js_sys::Reflect::set(&obj, &"look_y".into(), &rs.current.look_y.into());
                 let _ = js_sys::Reflect::set(&obj, &"blink".into(), &rs.current.blink_level.into());
+                let _ = js_sys::Reflect::set(&obj, &"mirror".into(), &rs.mirror.into());
                 let _ = js_sys::Reflect::set(&win, &"eyeDebug".into(), &obj);
             }
         });
