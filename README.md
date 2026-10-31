@@ -31,9 +31,10 @@ a camera tracks motion in front of the house and makes the eyes follow.
 
 **detector** — runs on any linux/mac/windows host with ffmpeg and an ip camera.
 
-**frontend** — wasm compiled from rust via trunk; renders in firefox and chrome
-using the webgl2 backend of wgpu. the same code compiles natively for a future
-tauri standalone application.
+**frontend** — wasm compiled from rust via trunk; renders with the webgl2 backend of
+wgpu. On the boards it runs inside Chromium in kiosk mode, fullscreen, launched by
+`eyes-kiosk.service`; in that environment wgpu reports ANGLE on Mesa/Panfrost
+(Mali-G52). Any browser with WebGL2 can also open the detector's page.
 
 ## prerequisites
 
@@ -42,8 +43,9 @@ tauri standalone application.
 | rust 1.89+ | https://rustup.rs |
 | wasm32 target | `rustup target add wasm32-unknown-unknown` |
 | trunk | `cargo install trunk` |
-| ffmpeg | `sudo apt install ffmpeg` / `brew install ffmpeg` |
+| ffmpeg | `sudo apt install ffmpeg` (detector spawns it) |
 | ip camera | any camera with an rtsp endpoint |
+| board runtime | Chromium + X11 (`xinit`), systemd units from `deploy/` |
 
 ## build
 
@@ -117,8 +119,8 @@ open `http://localhost:8081`.
 | `BG.png` | 2000×2000 px RGBA | background / eyelid mask |
 | `IRIS.png` | 2000×2000 px RGBA | iris overlay |
 
-the current wgpu shader renders a procedural eye; texture sampling from these
-images is the next implementation step.
+the shader samples both textures (`t_bg`, `t_iris` in `eye.wgsl`); the images are
+loaded by `render.rs` and uploaded as GPU textures at startup.
 
 ## project layout
 
@@ -140,18 +142,23 @@ crates/
       IRIS.png                   iris image (from original project)
     src/
       lib.rs                     leptos app component
-      transport.rs               EyeStateSource trait (websocket impl)
-      render.rs                  wgpu renderer (webgl2 / native)
-      eye.wgsl                   wgsl shader
+      transport.rs               EyeStateSource trait (websocket impl, auto-reconnect)
+      render.rs                  wgpu renderer (display-rate loop, timestamped playback)
+      diagnostics.rs             remote logging to the detector
+      eye.wgsl                   wgsl shader (texture-sampled iris and eyelid)
+    static/calib.html             click-to-calibrate page served at /calib
     index.html                   trunk entry point
     Trunk.toml                   trunk configuration
 ```
 
-## tauri (future)
+## tauri (not implemented)
 
-the `EyeStateSource` trait in `crates/frontend/src/transport.rs` abstracts the
-transport. swap `WebSocketSource` for a native tauri ipc implementation and the
-rendering code requires no changes.
+There is no tauri crate, build target or code in this repository. The only
+transport is `WebSocketSource` in `crates/frontend/src/transport.rs`.
+
+The `EyeStateSource` trait exists so a native shell could be added without touching
+rendering: implement the trait over IPC instead of `ws://`, keep everything else.
+Until that exists, the supported runtime is Chromium in kiosk mode.
 
 ## deployment (ROCK 4D, headless kiosk)
 
