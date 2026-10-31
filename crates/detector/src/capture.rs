@@ -92,11 +92,13 @@ async fn run_simulation_only(
 ) -> Result<()> {
     info!("no camera configured — running in simulation-only mode");
     let mut sim = EyeSimulation::new(crate::simulation::SimConfig::default());
+    let sim_start = Instant::now();
     let mut interval = tokio::time::interval(SIM_TICK_INTERVAL);
     let mut tick_count: u64 = 0;
     loop {
         interval.tick().await;
-        let state = simulation_tick(&mut sim, Instant::now());
+        let mut state = simulation_tick(&mut sim, Instant::now());
+        state.t_ms = sim_start.elapsed().as_secs_f64() * 1000.0;
         tick_count += 1;
         if tick_count % 300 == 0 {
             debug!("sim tick {}: look=({:.2},{:.2}) blink={:.2}",
@@ -126,6 +128,7 @@ async fn run_camera(
     let mut last_motion = Instant::now()
         .checked_sub(cfg.simulation_timeout)
         .unwrap_or(Instant::now());
+    let start = Instant::now();
     let mut target = sim.tick(Instant::now());
     let mut current = target;
     let mut last_tick = Instant::now();
@@ -178,6 +181,7 @@ async fn run_camera(
                                 debug!("motion at ({:.2},{:.2}) → eye ({ex:.3},{ey:.3})",
                                     result.centroid_x, result.centroid_y);
                                 EyeState {
+                                    t_ms: 0.0,
                                     look_x: ex,
                                     look_y: ey,
                                     blink_level: sim.tick(now).blink_level,
@@ -220,6 +224,7 @@ async fn run_camera(
                     current.look_y += step(current.look_y, target.look_y);
                     current.blink_level += step(current.blink_level, target.blink_level);
                     current.motion_detected = target.motion_detected;
+                    current.t_ms = start.elapsed().as_secs_f64() * 1000.0;
                     let _ = tx.send(current);
                 }
             }

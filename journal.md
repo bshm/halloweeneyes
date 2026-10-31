@@ -342,7 +342,26 @@ Both "eyes visible after boot" and "eyes move" were verified by frame diffs over
   CLI argument is given; the service now starts as `detector 0.0.0.0:8080`.
   Verified: `/proc` shows no RTSP URL.
 
-## 14. Open items
+## 14. Synchronised playback
+
+Detector stamps every broadcast with `t_ms` (process monotonic ms) and exposes
+`GET /time` returning the same clock. Each client measures its offset to that clock
+over the WebSocket/HTTP path (5 samples, minimum RTT wins), then renders the state
+produced `PLAYBACK_DELAY_MS = 100` ms ago, linearly interpolating between the two
+straddling samples. Because the delay is identical on both boards and the timeline
+is the detector's, transit jitter no longer shifts the phase.
+
+Measured phase error left vs right (30 paired reads of the displayed `t_ms`,
+projected onto a common host clock):
+
+```
+median -5.9 ms   mean -1.3 ms   p95 |delta| 9.6 ms   max 9.3 ms
+```
+
+Clock backing: chrony against `fritz.box` on both boards, ~0.14 ms relative error.
+`window.eyeDebug` exposes `{t_ms, look_x, look_y, blink}` for measurement.
+
+## 15. Open items
 
 - Automated setup script (idempotent) for card prep + deploy + verification.
 - Remove the Chromium remote-debugging port from the kiosk once verification is done.

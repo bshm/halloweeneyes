@@ -116,6 +116,7 @@ impl<R: Rng> EyeSimulation<R> {
         self.tick_movement(now);
         self.tick_blink(now);
         EyeState {
+            t_ms: 0.0,
             look_x: self.current_x,
             look_y: self.current_y,
             blink_level: self.current_blink,

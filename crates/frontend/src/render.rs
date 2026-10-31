@@ -8,7 +8,8 @@
 
 use anyhow::{anyhow, Result};
 use shared::EyeState;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
@@ -33,12 +34,24 @@ struct RenderState {
 
 thread_local! {
     static RENDERER: RefCell<Option<RenderState>> = RefCell::new(None);
+    /// (server t_ms, state) samples waiting to be played back.
+    static TIMELINE: RefCell<VecDeque<(f64, EyeState)>> = RefCell::new(VecDeque::new());
+    /// server_ms - local_ms, measured over the websocket/HTTP path.
+    static CLOCK_OFFSET_MS: Cell<f64> = const { Cell::new(0.0) };
     static RAF_HANDLE: RefCell<Option<wasm_bindgen::closure::Closure<dyn FnMut(f64)>>> =
         RefCell::new(None);
 }
 
 /// Time constant for smoothing toward the newest target (seconds).
 const SMOOTH_TAU: f64 = 0.0; // easing happens detector-side; clients snap to latest
+
+/// Playback delay: render the state that the server produced this long ago, so
+/// network jitter never shifts the phase. Both boards use the same value, which
+/// is what keeps left and right eyes synchronised.
+const PLAYBACK_DELAY_MS: f64 = 100.0;
+
+/// Keep at most this much history.
+const TIMELINE_KEEP_MS: f64 = 2000.0;
 
 /// Start the display-rate render loop. Eye state arrives at network cadence
 /// (tens of Hz, with jitter); drawing at refresh rate and easing toward the
@@ -55,18 +68,36 @@ fn start_render_loop() {
             let dt = ((now - rs.last_time) / 1000.0).max(0.0);
             rs.last_time = now;
 
+            let offset = CLOCK_OFFSET_MS.with(|c| c.get());
+            let display_ms = now + offset - PLAYBACK_DELAY_MS;
+            if let Some(st) = sample_at(display_ms) {
+                rs.target = st;
+            }
+
             let alpha = if SMOOTH_TAU <= 0.0 { 1.0 } else { 1.0 - (-dt / SMOOTH_TAU).exp() };
             rs.current.look_x += (rs.target.look_x - rs.current.look_x) * alpha;
             rs.current.look_y += (rs.target.look_y - rs.current.look_y) * alpha;
             rs.current.blink_level +=
                 (rs.target.blink_level - rs.current.blink_level) * alpha;
             rs.current.motion_detected = rs.target.motion_detected;
+            rs.current.t_ms = rs.target.t_ms;
 
             render_frame(
                 &rs.device, &rs.queue, &rs.surface,
                 &rs.pipeline, &rs.bind_group, &rs.uniform_buffer,
                 &rs.current, rs.mirror,
             );
+
+            // Publish the state being displayed so sync can be measured without
+            // screenshotting: window.eyeDebug = { t_ms, look_x, look_y, blink }.
+            if let Some(win) = web_sys::window() {
+                let obj = js_sys::Object::new();
+                let _ = js_sys::Reflect::set(&obj, &"t_ms".into(), &rs.current.t_ms.into());
+                let _ = js_sys::Reflect::set(&obj, &"look_x".into(), &rs.current.look_x.into());
+                let _ = js_sys::Reflect::set(&obj, &"look_y".into(), &rs.current.look_y.into());
+                let _ = js_sys::Reflect::set(&obj, &"blink".into(), &rs.current.blink_level.into());
+                let _ = js_sys::Reflect::set(&win, &"eyeDebug".into(), &obj);
+            }
         });
 
         // reschedule on the next display refresh
@@ -85,13 +116,59 @@ fn start_render_loop() {
     RAF_HANDLE.with(|h| *h.borrow_mut() = Some(cb));
 }
 
+/// Queue a timestamped state from the detector.
+pub fn push_state(state: EyeState) {
+    TIMELINE.with(|t| {
+        let mut q = t.borrow_mut();
+        q.push_back((state.t_ms, state));
+        while q.len() > 1 && state.t_ms - q.front().map(|s| s.0).unwrap_or(state.t_ms) > TIMELINE_KEEP_MS {
+            q.pop_front();
+        }
+    });
+}
+
+/// Offset between the detector clock and this page's `performance.now()`.
+pub fn set_clock_offset_ms(offset: f64) {
+    CLOCK_OFFSET_MS.with(|c| c.set(offset));
+}
+
+/// Compatibility entry point: state without a usable timestamp is played now.
 pub fn update_eye_state(state: EyeState) {
-    // Only record the newest target; the display-rate loop does the drawing.
     RENDERER.with(|r| {
         if let Some(rs) = r.borrow_mut().as_mut() {
             rs.target = state;
         }
     });
+    push_state(state);
+}
+
+/// State to display at server time `now_ms`, linearly interpolated.
+fn sample_at(now_ms: f64) -> Option<EyeState> {
+    TIMELINE.with(|t| {
+        let q = t.borrow();
+        if q.is_empty() {
+            return None;
+        }
+        let mut prev: Option<(f64, EyeState)> = None;
+        for (ts, st) in q.iter() {
+            if *ts >= now_ms {
+                if let Some((pts, pst)) = prev {
+                    let span = (*ts - pts).max(0.0001);
+                    let a = ((now_ms - pts) / span).clamp(0.0, 1.0);
+                    return Some(EyeState {
+                        look_x: pst.look_x + (st.look_x - pst.look_x) * a,
+                        look_y: pst.look_y + (st.look_y - pst.look_y) * a,
+                        blink_level: pst.blink_level + (st.blink_level - pst.blink_level) * a,
+                        motion_detected: st.motion_detected,
+                        t_ms: now_ms,
+                    });
+                }
+                return Some(*st);
+            }
+            prev = Some((*ts, *st));
+        }
+        prev.map(|(_, st)| st)
+    })
 }
 
 async fn fetch_bytes(url: &str) -> Result<Vec<u8>> {

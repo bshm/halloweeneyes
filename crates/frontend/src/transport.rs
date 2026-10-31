@@ -52,6 +52,7 @@ fn attach(url: String, sink: WriteSignal<EyeState>) -> Option<WebSocket> {
 
     let on_open = Closure::wrap(Box::new(|_: web_sys::Event| {
         log!("websocket open");
+        probe_clock_offset();
     }) as Box<dyn FnMut(web_sys::Event)>);
     socket.set_onopen(Some(on_open.as_ref().unchecked_ref()));
     on_open.forget();
@@ -66,7 +67,9 @@ fn attach(url: String, sink: WriteSignal<EyeState>) -> Option<WebSocket> {
             }
             match serde_json::from_str::<ServerMessage>(&txt) {
                 Ok(ServerMessage::EyeUpdate(state)) => {
-                    crate::render::update_eye_state(state);
+                    // Timestamped path: the renderer plays it back on the
+                    // shared server timeline.
+                    crate::render::push_state(state);
                     sink.set(state);
                 }
                 Err(e) => err!("json parse error: {} — raw: {}", e, txt),
@@ -93,6 +96,50 @@ fn attach(url: String, sink: WriteSignal<EyeState>) -> Option<WebSocket> {
     on_close.forget();
 
     Some(socket)
+}
+
+fn perf_now() -> f64 {
+    web_sys::window()
+        .and_then(|w| w.performance())
+        .map(|p| p.now())
+        .unwrap_or(0.0)
+}
+
+/// One `GET /time` round trip, returning the detector clock in ms.
+async fn fetch_time_ms() -> Option<f64> {
+    use wasm_bindgen::JsCast;
+    let window = web_sys::window()?;
+    let resp_val = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str("/time")).await.ok()?;
+    let resp: web_sys::Response = resp_val.dyn_into().ok()?;
+    let text_val = wasm_bindgen_futures::JsFuture::from(resp.text().ok()?).await.ok()?;
+    let text = text_val.as_string()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    v.get("t_ms")?.as_f64()
+}
+
+/// Estimate the detector clock offset over the same network path the state
+/// messages use; the minimum-RTT sample wins.
+fn probe_clock_offset() {
+    wasm_bindgen_futures::spawn_local(async move {
+        let mut best: Option<(f64, f64)> = None; // (rtt, offset)
+        for _ in 0..5 {
+            let t0 = perf_now();
+            if let Some(t_ms) = fetch_time_ms().await {
+                let t1 = perf_now();
+                let rtt = t1 - t0;
+                let offset = t_ms - (t0 + t1) / 2.0;
+                if best.map(|(r, _)| rtt < r).unwrap_or(true) {
+                    best = Some((rtt, offset));
+                }
+            }
+        }
+        if let Some((rtt, offset)) = best {
+            log!("clock offset {:.1} ms (min rtt {:.1} ms)", offset, rtt);
+            crate::render::set_clock_offset_ms(offset);
+        } else {
+            err!("clock offset probe failed");
+        }
+    });
 }
 
 /// Reconnect after a short delay, without needing a page reload.

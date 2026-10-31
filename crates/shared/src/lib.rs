@@ -13,6 +13,10 @@ pub struct EyeState {
     pub blink_level: f64,
     /// True when state originates from live motion detection.
     pub motion_detected: bool,
+    /// Detector monotonic timestamp in milliseconds; clients use it to
+    /// interpolate on a shared timeline.
+    #[serde(default)]
+    pub t_ms: f64,
 }
 
 impl EyeState {
@@ -22,6 +26,7 @@ impl EyeState {
             look_y: 0.0,
             blink_level: 0.0,
             motion_detected: false,
+            t_ms: 0.0,
         }
     }
 }

@@ -20,6 +20,7 @@ use axum::{
 };
 use shared::{EyeState, ServerMessage};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::broadcast;
 use tower_http::{cors::CorsLayer, services::ServeDir};
 use tracing::{debug, info};
@@ -27,13 +28,15 @@ use tracing::{debug, info};
 #[derive(Clone)]
 struct AppState {
     tx: Arc<broadcast::Sender<EyeState>>,
+    start: Instant,
 }
 
 pub async fn run(bind_addr: String, tx: Arc<broadcast::Sender<EyeState>>) -> Result<()> {
-    let state = AppState { tx };
+    let state = AppState { tx, start: Instant::now() };
 
     let app = Router::new()
         .route("/ws", get(ws_handler))
+        .route("/time", get(time_handler))
         .route("/log", post(frontend_log_handler))
         .fallback_service(ServeDir::new("crates/frontend/dist"))
         .layer(CorsLayer::permissive())
@@ -46,6 +49,14 @@ pub async fn run(bind_addr: String, tx: Arc<broadcast::Sender<EyeState>>) -> Res
     info!("listening on http://{bind_addr}");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Detector monotonic clock in milliseconds; clients use this to map their
+/// local timeline onto the server's so both eyes render the same phase.
+async fn time_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let t_ms = state.start.elapsed().as_secs_f64() * 1000.0;
+    (StatusCode::OK, [(axum::http::header::CONTENT_TYPE, "application/json")],
+     format!("{{\"t_ms\":{t_ms}}}"))
 }
 
 /// Receives plain-text log lines from the WASM frontend and prints them
@@ -106,6 +117,7 @@ mod tests {
             look_y: -0.3,
             blink_level: 0.1,
             motion_detected: true,
+            t_ms: 0.0,
         };
         let msg = ServerMessage::EyeUpdate(state);
         let json = serde_json::to_string(&msg).unwrap();
