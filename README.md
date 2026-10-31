@@ -153,6 +153,54 @@ the `EyeStateSource` trait in `crates/frontend/src/transport.rs` abstracts the
 transport. swap `WebSocketSource` for a native tauri ipc implementation and the
 rendering code requires no changes.
 
+## deployment (ROCK 4D, headless kiosk)
+
+Two boards, one detector: `left-eye` runs the detector and talks to the camera,
+`right-eye` only renders the state broadcast by the left eye.
+
+```sh
+# build detector (aarch64) + wasm frontend
+just build
+
+# check the image archive
+just image-check
+
+# write a card and prepare it
+just flash-left  /dev/sdX                # detector + kiosk on this card
+just flash-right /dev/sdX                # kiosk only, points at left-eye
+
+# or step by step
+just flash /dev/sdX
+export WIFI_PSK=...                      # never stored in the repo
+just card-left  /dev/sdX host=left-eye
+just card-right /dev/sdX host=right-eye
+
+# configure WiFi on a board that is already running
+just wifi host=radxa@192.168.42.92 ssid=TODOFixLater psk=...
+
+# push freshly built artefacts to a running board
+just deploy left
+just deploy right
+just verify
+just verify-camera
+```
+
+What lands on the card:
+
+| piece | left-eye | right-eye |
+|---|---|---|
+| `eyes-detector.service` (camera + websocket) | yes | no |
+| `eyes-kiosk.service` (`xinit` + Chromium kiosk) | yes | yes |
+| `eyes-sshd.service` (survives `rsetup`) | yes | yes |
+| kiosk URL | `http://127.0.0.1:8080/` | `http://192.168.42.92:8080/` |
+
+Secrets: the WiFi key is templated (`deploy/wifi.nmconnection.tmpl`) and injected at
+prepare time; the camera URL lives in `/opt/eyes/detector.env` (mode 600) and is read
+from the environment, so it never appears in `ps`.
+
+Full reproducible build/deploy record, timings and the failure modes found on the way:
+[journal.md](journal.md).
+
 ## original project
 
 https://github.com/bshm/halloweeneyes — c++/qt4/opencv, ~2016
