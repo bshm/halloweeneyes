@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use tokio::sync::broadcast;
 use tower_http::{cors::CorsLayer, services::ServeDir};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 type Samples = Arc<Mutex<Vec<(f64, f64, f64, f64)>>>;
 
@@ -35,6 +35,20 @@ pub struct CalibState {
     pub map: Arc<RwLock<CoordinateMapConfig>>,
     pub samples: Samples,
     pub frame: Arc<Mutex<Option<Vec<u8>>>>,
+    pub path: Arc<std::path::PathBuf>,
+}
+
+/// Persist the active mapping; atomic replace so a crash cannot truncate it.
+fn save_calib(path: &std::path::Path, cfg: &CoordinateMapConfig) {
+    if let Ok(txt) = serde_json::to_string_pretty(cfg) {
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, txt).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+            info!("calibration saved to {}", path.display());
+        } else {
+            warn!("could not write {}", tmp.display());
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -147,7 +161,9 @@ async fn calib_set(State(state): State<AppState>, Json(body): Json<CalibIn>) -> 
     }
     cfg.x_poly = PolyCoeffs::from_slice(&[body.x[0], body.x[1], body.x[2], body.x[3], body.x[4]]);
     cfg.y_poly = PolyCoeffs::from_slice(&[body.y[0], body.y[1], body.y[2], body.y[3], body.y[4]]);
+    let saved = cfg.clone();
     drop(cfg);
+    save_calib(&state.calib.path, &saved);
     let cfg = state.calib.map.read().unwrap().clone();
     let n = state.calib.samples.lock().unwrap().len();
     (StatusCode::OK, serde_json::to_string(&calib_out(&cfg, n)).unwrap())
@@ -184,6 +200,9 @@ async fn calib_fit(State(state): State<AppState>) -> impl IntoResponse {
         let mut cfg = state.calib.map.write().unwrap();
         cfg.x_poly = px;
         cfg.y_poly = py;
+        let saved = cfg.clone();
+        drop(cfg);
+        save_calib(&state.calib.path, &saved);
     }
     let cfg = state.calib.map.read().unwrap().clone();
     let mut err = 0.0;
@@ -213,6 +232,7 @@ async fn calib_reset(State(state): State<AppState>) -> impl IntoResponse {
         *cfg = CoordinateMapConfig::default();
     }
     state.calib.samples.lock().unwrap().clear();
+    let _ = std::fs::remove_file(&*state.calib.path);
     (StatusCode::OK, "reset to defaults".to_string())
 }
 

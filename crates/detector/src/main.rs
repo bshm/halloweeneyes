@@ -42,10 +42,23 @@ async fn main() -> Result<()> {
     let (tx, _rx) = broadcast::channel::<EyeState>(64);
     let tx = Arc::new(tx);
 
+    // Calibration survives restarts; delete the file or POST /calib/reset to
+    // return to the built-in defaults.
+    let calib_path = std::env::var("EYES_CALIB_FILE")
+        .unwrap_or_else(|_| "/opt/eyes/calibration.json".to_string());
+    let calib_path = std::path::PathBuf::from(calib_path);
+    let map = std::fs::read_to_string(&calib_path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<CoordinateMapConfig>(&t).ok())
+        .unwrap_or_default();
+    if calib_path.exists() {
+        tracing::info!("calibration loaded from {}", calib_path.display());
+    }
     let calib = CalibState {
-        map: Arc::new(RwLock::new(CoordinateMapConfig::default())),
+        map: Arc::new(RwLock::new(map)),
         samples: Arc::new(Mutex::new(Vec::new())),
         frame: Arc::new(Mutex::new(None)),
+        path: Arc::new(calib_path),
     };
 
     let capture_tx = tx.clone();
