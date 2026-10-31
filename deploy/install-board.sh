@@ -32,6 +32,9 @@ fi
 set -euo pipefail
 ROLE="$1"
 sudo install -m 755 /tmp/kiosk.sh /opt/eyes/kiosk.sh
+if [ "$ROLE" = right ]; then
+  sudo sed -i 's|http://127.0.0.1:8080/|http://192.168.42.92:8080/?eye=right|' /opt/eyes/kiosk.sh
+fi
 sudo install -m 644 /tmp/eyes-sshd.service /etc/systemd/system/eyes-sshd.service
 sudo install -m 644 /tmp/eyes-kiosk.service /etc/systemd/system/eyes-kiosk.service
 if [ "$ROLE" = left ]; then

@@ -26,26 +26,70 @@ struct RenderState {
     bind_group: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
     mirror: f32,
-    last_state: Option<EyeState>,
+    target: EyeState,
+    current: EyeState,
+    last_time: f64,
 }
 
 thread_local! {
     static RENDERER: RefCell<Option<RenderState>> = RefCell::new(None);
+    static RAF_HANDLE: RefCell<Option<wasm_bindgen::closure::Closure<dyn FnMut(f64)>>> =
+        RefCell::new(None);
 }
 
-pub fn update_eye_state(state: EyeState) {
-    RENDERER.with(|r| {
-        let mut guard = r.borrow_mut();
-        if let Some(rs) = guard.as_mut() {
-            if rs.last_state == Some(state) {
-                return;
-            }
-            rs.last_state = Some(state);
+/// Time constant for smoothing toward the newest target (seconds).
+const SMOOTH_TAU: f64 = 0.0; // easing happens detector-side; clients snap to latest
+
+/// Start the display-rate render loop. Eye state arrives at network cadence
+/// (tens of Hz, with jitter); drawing at refresh rate and easing toward the
+/// newest target removes the visible stepping.
+fn start_render_loop() {
+    let cb = wasm_bindgen::closure::Closure::wrap(Box::new(move |_ts: f64| {
+        RENDERER.with(|r| {
+            let mut guard = r.borrow_mut();
+            let Some(rs) = guard.as_mut() else { return; };
+            let now = web_sys::window()
+                .and_then(|w| w.performance())
+                .map(|p| p.now())
+                .unwrap_or(rs.last_time);
+            let dt = ((now - rs.last_time) / 1000.0).max(0.0);
+            rs.last_time = now;
+
+            let alpha = if SMOOTH_TAU <= 0.0 { 1.0 } else { 1.0 - (-dt / SMOOTH_TAU).exp() };
+            rs.current.look_x += (rs.target.look_x - rs.current.look_x) * alpha;
+            rs.current.look_y += (rs.target.look_y - rs.current.look_y) * alpha;
+            rs.current.blink_level +=
+                (rs.target.blink_level - rs.current.blink_level) * alpha;
+            rs.current.motion_detected = rs.target.motion_detected;
+
             render_frame(
                 &rs.device, &rs.queue, &rs.surface,
                 &rs.pipeline, &rs.bind_group, &rs.uniform_buffer,
-                &state, rs.mirror,
+                &rs.current, rs.mirror,
             );
+        });
+
+        // reschedule on the next display refresh
+        RAF_HANDLE.with(|h| {
+            if let Some(cb) = h.borrow().as_ref() {
+                if let Some(w) = web_sys::window() {
+                    let _ = w.request_animation_frame(cb.as_ref().unchecked_ref());
+                }
+            }
+        });
+    }) as Box<dyn FnMut(f64)>);
+
+    if let Some(w) = web_sys::window() {
+        let _ = w.request_animation_frame(cb.as_ref().unchecked_ref());
+    }
+    RAF_HANDLE.with(|h| *h.borrow_mut() = Some(cb));
+}
+
+pub fn update_eye_state(state: EyeState) {
+    // Only record the newest target; the display-rate loop does the drawing.
+    RENDERER.with(|r| {
+        if let Some(rs) = r.borrow_mut().as_mut() {
+            rs.target = state;
         }
     });
 }
@@ -307,13 +351,21 @@ pub async fn init_renderer(canvas: web_sys::HtmlCanvasElement, mirror: f32) -> R
     let initial_state = EyeState::default_open();
     render_frame(&device, &queue, &surface, &pipeline, &bind_group, &uniform_buffer, &initial_state, mirror);
 
+    let start_time = web_sys::window()
+        .and_then(|w| w.performance())
+        .map(|p| p.now())
+        .unwrap_or(0.0);
+
     RENDERER.with(|r| {
         *r.borrow_mut() = Some(RenderState {
             device, queue, surface, pipeline, bind_group, uniform_buffer, mirror,
-            last_state: None,
+            target: initial_state,
+            current: initial_state,
+            last_time: start_time,
         });
     });
-    log!("renderer ready");
+    start_render_loop();
+    log!("renderer ready (display-rate loop, tau {:.0} ms)", SMOOTH_TAU * 1000.0);
     Ok(())
 }
 

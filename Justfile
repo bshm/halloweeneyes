@@ -95,9 +95,8 @@ flash-right dev:
 
 # push artefacts + units to a board and restart services
 deploy role="left" host="":
-    @set -euo pipefail; \
-      h="{{left_host}}"; [[ "{{role}}" == "right" ]] && h="radxa@{{right_ip}}"; [[ -n "{{host}}" ]] && h="{{host}}"; \
-      SSH_PORT={{ssh_port}} deploy/install-board.sh "$$h" {{role}}
+    chmod +x deploy/deploy.sh deploy/install-board.sh
+    deploy/deploy.sh {{role}} "{{host}}"
 
 # reachability, services, renderer and camera checks
 verify host="":

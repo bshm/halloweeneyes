@@ -27,7 +27,14 @@ use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
 /// Target tick interval for simulation-only mode (~30 fps).
-const SIM_TICK_INTERVAL: Duration = Duration::from_millis(33);
+const SIM_TICK_INTERVAL: Duration = Duration::from_millis(16);
+
+/// Easing time constant for the broadcast state (detector-side, shared by all clients).
+const BROADCAST_TAU: f64 = 0.12;
+
+/// Hard cap on how far the broadcast state may move per second, so a large
+/// jump in the motion centroid (or motion flipping on/off) cannot snap the eye.
+const MAX_SLEW_PER_SEC: f64 = 1.2;
 
 /// If ffmpeg produces no frame for this long, the stream is considered dead and
 /// the subprocess is restarted.
@@ -119,6 +126,9 @@ async fn run_camera(
     let mut last_motion = Instant::now()
         .checked_sub(cfg.simulation_timeout)
         .unwrap_or(Instant::now());
+    let mut target = sim.tick(Instant::now());
+    let mut current = target;
+    let mut last_tick = Instant::now();
 
     loop {
         info!("opening RTSP stream: {}", rtsp_url);
@@ -181,7 +191,7 @@ async fn run_camera(
                     };
 
                     prev_gray = Some(gray);
-                    let _ = tx.send(state);
+                    target = state;
                 }
                 _ = ticker.tick() => {
                     // Keep the eye alive even when no frames arrive: after the
@@ -191,8 +201,26 @@ async fn run_camera(
                         break;
                     }
                     if last_motion.elapsed() >= cfg.simulation_timeout {
-                        let _ = tx.send(sim.tick(Instant::now()));
+                        target = sim.tick(Instant::now());
                     }
+
+                    // Fixed-rate broadcast, independent of camera cadence: every
+                    // client sees the same phase, and the easing happens here
+                    // once instead of per client.
+                    let now = Instant::now();
+                    let dt = now.duration_since(last_tick).as_secs_f64();
+                    last_tick = now;
+                    let alpha = 1.0 - (-dt / BROADCAST_TAU).exp();
+                    let max_step = MAX_SLEW_PER_SEC * dt;
+                    let step = |cur: f64, tgt: f64| {
+                        let d = (tgt - cur) * alpha;
+                        d.clamp(-max_step, max_step)
+                    };
+                    current.look_x += step(current.look_x, target.look_x);
+                    current.look_y += step(current.look_y, target.look_y);
+                    current.blink_level += step(current.blink_level, target.blink_level);
+                    current.motion_detected = target.motion_detected;
+                    let _ = tx.send(current);
                 }
             }
         }

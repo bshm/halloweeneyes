@@ -27,6 +27,7 @@ web-sys = { version = "0.3", features = [
     "RequestMode",
     "Headers",
     "Response",
+    "Performance",
 ] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 js-sys = "0.3"
