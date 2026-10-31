@@ -359,7 +359,12 @@ median -5.9 ms   mean -1.3 ms   p95 |delta| 9.6 ms   max 9.3 ms
 ```
 
 Clock backing: chrony against `fritz.box` on both boards, ~0.14 ms relative error.
-`window.eyeDebug` exposes `{t_ms, look_x, look_y, blink}` for measurement.
+`window.eyeDebug` exposes `{t_ms, look_x, look_y, blink, mirror, offset, queued}` for
+measurement.
+
+Failure mode found: if the offset probe fails once (page load race), `offset` stayed 0,
+the playhead sat before every sample and the eye pinned to the oldest one - frozen
+right eye. The probe now retries every 2 s on failure and refreshes every 30 s.
 
 ## 15. Open items
 

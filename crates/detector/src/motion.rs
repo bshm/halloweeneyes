@@ -42,6 +42,8 @@ pub struct MotionResult {
     pub centroid_y: f64,
     /// Area of the largest detected region in pixels.
     pub area: u32,
+    /// Bounding box of the largest region: (x0, y0, x1, y1), inclusive.
+    pub bbox: (u32, u32, u32, u32),
 }
 
 /// Computes the absolute per-pixel difference between two same-size grayscale images.
@@ -121,11 +123,15 @@ pub fn largest_region_centroid(img: &GrayImage, min_area: u32) -> Option<MotionR
             let mut sum_x: u64 = 0;
             let mut sum_y: u64 = 0;
             let mut area: u32 = 0;
+            let mut x0 = start_x; let mut x1 = start_x;
+            let mut y0 = start_y; let mut y1 = start_y;
 
             while let Some((cx, cy)) = queue.pop_front() {
                 sum_x += cx as u64;
                 sum_y += cy as u64;
                 area += 1;
+                x0 = x0.min(cx); x1 = x1.max(cx);
+                y0 = y0.min(cy); y1 = y1.max(cy);
 
                 for (nx, ny) in neighbours_4(cx, cy, w, h) {
                     let nidx = (ny * w + nx) as usize;
@@ -141,6 +147,7 @@ pub fn largest_region_centroid(img: &GrayImage, min_area: u32) -> Option<MotionR
                     centroid_x: sum_x as f64 / area as f64,
                     centroid_y: sum_y as f64 / area as f64,
                     area,
+                    bbox: (x0, y0, x1, y1),
                 };
                 if best.as_ref().map_or(true, |b| candidate.area > b.area) {
                     best = Some(candidate);

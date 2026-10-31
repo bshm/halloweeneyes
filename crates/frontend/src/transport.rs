@@ -117,27 +117,45 @@ async fn fetch_time_ms() -> Option<f64> {
     v.get("t_ms")?.as_f64()
 }
 
+async fn sleep_ms(ms: i32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        if let Some(w) = web_sys::window() {
+            let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
 /// Estimate the detector clock offset over the same network path the state
-/// messages use; the minimum-RTT sample wins.
+/// messages use; the minimum-RTT sample wins. Retries on failure and refreshes
+/// periodically, because a stale zero offset would pin the playhead to the
+/// oldest sample and freeze the eye.
 fn probe_clock_offset() {
     wasm_bindgen_futures::spawn_local(async move {
-        let mut best: Option<(f64, f64)> = None; // (rtt, offset)
-        for _ in 0..5 {
-            let t0 = perf_now();
-            if let Some(t_ms) = fetch_time_ms().await {
-                let t1 = perf_now();
-                let rtt = t1 - t0;
-                let offset = t_ms - (t0 + t1) / 2.0;
-                if best.map(|(r, _)| rtt < r).unwrap_or(true) {
-                    best = Some((rtt, offset));
+        loop {
+            let mut best: Option<(f64, f64)> = None; // (rtt, offset)
+            for _ in 0..5 {
+                let t0 = perf_now();
+                if let Some(t_ms) = fetch_time_ms().await {
+                    let t1 = perf_now();
+                    let rtt = t1 - t0;
+                    let offset = t_ms - (t0 + t1) / 2.0;
+                    if best.map(|(r, _)| rtt < r).unwrap_or(true) {
+                        best = Some((rtt, offset));
+                    }
                 }
             }
-        }
-        if let Some((rtt, offset)) = best {
-            log!("clock offset {:.1} ms (min rtt {:.1} ms)", offset, rtt);
-            crate::render::set_clock_offset_ms(offset);
-        } else {
-            err!("clock offset probe failed");
+            match best {
+                Some((rtt, offset)) => {
+                    log!("clock offset {:.1} ms (min rtt {:.1} ms)", offset, rtt);
+                    crate::render::set_clock_offset_ms(offset);
+                    sleep_ms(30_000).await;
+                }
+                None => {
+                    err!("clock offset probe failed, retrying");
+                    sleep_ms(2_000).await;
+                }
+            }
         }
     });
 }

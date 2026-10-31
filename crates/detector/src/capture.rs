@@ -17,7 +17,10 @@
 
 use crate::{coordinate::CoordinateMapConfig, motion::MotionConfig, simulation::EyeSimulation};
 use anyhow::{Context, Result};
-use image::GrayImage;
+use image::{GrayImage, ImageFormat, Rgb, RgbImage};
+use imageproc::drawing::{draw_hollow_rect_mut, draw_line_segment_mut};
+use imageproc::rect::Rect;
+use std::path::PathBuf;
 use shared::EyeState;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,6 +28,105 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
+
+/// Optional per-frame debug dump: annotated JPEG with centroid and bbox.
+struct DebugSink {
+    dir: PathBuf,
+    max: u64,
+    index: u64,
+}
+
+impl DebugSink {
+    fn from_env() -> Option<Self> {
+        let dir = std::env::var("EYES_DEBUG_DIR").ok()?;
+        if dir.trim().is_empty() {
+            return None;
+        }
+        let dir = PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).ok()?;
+        let max = std::env::var("EYES_DEBUG_MAX")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(5000);
+        info!("debug frames -> {} (keep {})", dir.display(), max);
+        Some(Self { dir, max, index: 0 })
+    }
+
+    fn write(&mut self, img: &RgbImage, t_ms: f64) {
+        let path = self.dir.join(format!("{:08}.jpg", self.index));
+        let _ = img.save_with_format(&path, ImageFormat::Jpeg);
+        self.index += 1;
+        if self.index > self.max {
+            let _ = std::fs::remove_file(
+                self.dir.join(format!("{:08}.jpg", self.index - self.max - 1)),
+            );
+        }
+        let _ = t_ms;
+    }
+}
+
+/// Pushes annotated frames to an RTSP server (mediamtx) via an ffmpeg publisher.
+struct RtspPublisher {
+    child: tokio::process::Child,
+    stdin: tokio::process::ChildStdin,
+    url: String,
+    last_error: Instant,
+}
+
+impl RtspPublisher {
+    async fn spawn(url: String, w: u32, h: u32, fps: u32) -> Option<Self> {
+        let mut child = Command::new("ffmpeg")
+            .args([
+                "-loglevel", "error",
+                "-f", "rawvideo", "-pix_fmt", "rgb24",
+                "-s", &format!("{w}x{h}"), "-r", &fps.to_string(),
+                "-i", "-",
+                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+                "-b:v", "900k", "-g", "20",
+                "-f", "rtsp", "-rtsp_transport", "tcp", &url,
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        let stdin = child.stdin.take()?;
+        info!("rtsp debug publisher -> {url}");
+        Some(Self { child, stdin, url, last_error: Instant::now() })
+    }
+
+    async fn write(&mut self, w: u32, h: u32, rgb: &[u8]) {
+        use tokio::io::AsyncWriteExt;
+        if self.stdin.write_all(rgb).await.is_err() {
+            if self.last_error.elapsed() > Duration::from_secs(5) {
+                warn!("rtsp publisher to {} failed, restarting", self.url);
+                self.last_error = Instant::now();
+            }
+            let _ = self.child.kill().await;
+            let _ = self.child.wait().await;
+            if let Some(new) = RtspPublisher::spawn(self.url.clone(), w, h, 20).await {
+                *self = new;
+            }
+        }
+    }
+}
+
+/// Draw bounding box and centroid on a copy of the raw frame.
+fn annotate(buf: &[u8], w: u32, h: u32, res: Option<&crate::motion::MotionResult>) -> RgbImage {
+    let mut img = RgbImage::from_raw(w, h, buf.to_vec()).unwrap_or_else(|| RgbImage::new(w, h));
+    if let Some(r) = res {
+        let (x0, y0, x1, y1) = r.bbox;
+        draw_hollow_rect_mut(
+            &mut img,
+            Rect::at(x0 as i32, y0 as i32).of_size((x1 - x0).max(1), (y1 - y0).max(1)),
+            Rgb([0, 255, 0]),
+        );
+        let (cx, cy) = (r.centroid_x as f32, r.centroid_y as f32);
+        draw_line_segment_mut(&mut img, (cx - 6.0, cy), (cx + 6.0, cy), Rgb([255, 0, 0]));
+        draw_line_segment_mut(&mut img, (cx, cy - 6.0), (cx, cy + 6.0), Rgb([255, 0, 0]));
+    }
+    img
+}
 
 /// Target tick interval for simulation-only mode (~30 fps).
 const SIM_TICK_INTERVAL: Duration = Duration::from_millis(16);
@@ -124,11 +226,33 @@ async fn run_camera(
     cfg: CaptureConfig,
     tx: Arc<broadcast::Sender<EyeState>>,
 ) -> Result<()> {
-    let rtsp_url = cfg.rtsp_url.as_deref().unwrap();
+    let rtsp_url = cfg.rtsp_url.clone().unwrap();
     info!("camera mode: rtsp_url={}", rtsp_url);
+
+    // Motion tuning from the environment so sensitivity can be changed without a rebuild.
+    let mut cfg = cfg;
+    if let Ok(v) = std::env::var("EYES_SENSITIVITY") {
+        if let Ok(v) = v.parse::<u8>() { cfg.motion.sensitivity = v; }
+    }
+    if let Ok(v) = std::env::var("EYES_BLUR") {
+        if let Ok(v) = v.parse::<u32>() { cfg.motion.blur_size = v; }
+    }
+    if let Ok(v) = std::env::var("EYES_MIN_AREA") {
+        if let Ok(v) = v.parse::<u32>() { cfg.motion.min_area = v; }
+    }
+    info!("motion: sensitivity={} blur={} min_area={}",
+        cfg.motion.sensitivity, cfg.motion.blur_size, cfg.motion.min_area);
+    let mut debug_sink = DebugSink::from_env();
+    let mut publisher = match std::env::var("EYES_RTSP_PUBLISH") {
+        Ok(url) if !url.trim().is_empty() => {
+            RtspPublisher::spawn(url, cfg.width, cfg.height, 20).await
+        }
+        _ => None,
+    };
     let mut sim = EyeSimulation::new(crate::simulation::SimConfig::default());
     let frame_bytes = (cfg.width * cfg.height * 3) as usize;
     let mut prev_gray: Option<GrayImage> = None;
+    let mut last_result: Option<crate::motion::MotionResult> = None;
     let mut last_motion = Instant::now()
         .checked_sub(cfg.simulation_timeout)
         .unwrap_or(Instant::now());
@@ -145,7 +269,7 @@ async fn run_camera(
             .args([
                 "-loglevel", "error",
                 "-rtsp_transport", "tcp",
-                "-i", rtsp_url,
+                "-i", rtsp_url.as_str(),
                 "-vf", &format!("scale={}:{}", cfg.width, cfg.height),
                 "-f", "rawvideo",
                 "-pix_fmt", "rgb24",
@@ -176,6 +300,7 @@ async fn run_camera(
                     let state = if let Some(ref prev) = prev_gray {
                         match crate::motion::detect_motion(prev, &gray, &cfg.motion) {
                             Some(result) => {
+                                last_result = Some(result.clone());
                                 last_motion = now;
                                 let (ex, ey) = crate::coordinate::map_to_eye(
                                     result.centroid_x,
@@ -193,11 +318,24 @@ async fn run_camera(
                                     motion_detected: true,
                                 }
                             }
-                            None => sim.tick(now),
+                            None => {
+                                last_result = None;
+                                sim.tick(now)
+                            }
                         }
                     } else {
                         sim.tick(now)
                     };
+
+                    if debug_sink.is_some() || publisher.is_some() {
+                        let img = annotate(&buf, cfg.width, cfg.height, last_result.as_ref());
+                        if let Some(sink) = debug_sink.as_mut() {
+                            sink.write(&img, start.elapsed().as_secs_f64() * 1000.0);
+                        }
+                        if let Some(pubr) = publisher.as_mut() {
+                            pubr.write(cfg.width, cfg.height, img.as_raw()).await;
+                        }
+                    }
 
                     prev_gray = Some(gray);
                     target = state;
