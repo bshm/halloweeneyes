@@ -21,6 +21,11 @@
 <div class="row">camera px: <input id="cx" readonly> <input id="cy" readonly>
   &nbsp; eye: <input id="ex" value="0"> <input id="ey" value="0">
   &nbsp; <button onclick="addSample()">add sample</button></div>
+<div class="row">
+  <canvas id="pad" width="200" height="200" style="border:1px solid #555;vertical-align:top"></canvas>
+  <span style="vertical-align:top"> click / drag in the pad to set the eye coordinate<br>
+    <span style="color:#888">full square = visual field, circle = typical usable range</span></span>
+</div>
 <div class="row"><button onclick="fit()">fit &amp; apply</button>
   <button onclick="reset()">reset to defaults</button>
   <button onclick="state()">show state</button>
@@ -56,6 +61,43 @@ async function state(){
   const r=await fetch('/calib/state'); const j=await r.json();
   document.getElementById('count').textContent='samples: '+j.samples;
 }
+// eye-space pad: canvas square maps to [-1,1]^2
+const pad=document.getElementById('pad'), pctx=pad.getContext('2d');
+let eyeX=0, eyeY=0;
+function drawPad(){
+  const W=pad.width,H=pad.height;
+  pctx.fillStyle='#000'; pctx.fillRect(0,0,W,H);
+  pctx.strokeStyle='#333';
+  for(let i=1;i<4;i++){
+    pctx.beginPath(); pctx.moveTo(i*W/4,0); pctx.lineTo(i*W/4,H); pctx.stroke();
+    pctx.beginPath(); pctx.moveTo(0,i*H/4); pctx.lineTo(W,i*H/4); pctx.stroke();
+  }
+  pctx.strokeStyle='#666';
+  pctx.beginPath(); pctx.moveTo(W/2,0); pctx.lineTo(W/2,H); pctx.stroke();
+  pctx.beginPath(); pctx.moveTo(0,H/2); pctx.lineTo(W,H/2); pctx.stroke();
+  pctx.strokeStyle='#2a6'; pctx.beginPath();
+  pctx.arc(W/2,H/2,W/2-2,0,Math.PI*2); pctx.stroke();
+  const px=W/2+eyeX*(W/2-2), py=H/2+eyeY*(H/2-2);
+  pctx.strokeStyle='#f33'; pctx.beginPath();
+  pctx.moveTo(px-6,py); pctx.lineTo(px+6,py);
+  pctx.moveTo(px,py-6); pctx.lineTo(px,py+6); pctx.stroke();
+  pctx.beginPath(); pctx.arc(px,py,3,0,Math.PI*2); pctx.stroke();
+}
+function setEyeFromEvent(e){
+  const r=pad.getBoundingClientRect();
+  const x=(e.clientX-r.left)/r.width, y=(e.clientY-r.top)/r.height;
+  eyeX=Math.max(-1,Math.min(1,x*2-1));
+  eyeY=Math.max(-1,Math.min(1,y*2-1));
+  document.getElementById('ex').value=eyeX.toFixed(3);
+  document.getElementById('ey').value=eyeY.toFixed(3);
+  drawPad();
+}
+let dragging=false;
+pad.addEventListener('mousedown',e=>{dragging=true;setEyeFromEvent(e);});
+pad.addEventListener('mousemove',e=>{if(dragging)setEyeFromEvent(e);});
+window.addEventListener('mouseup',()=>{dragging=false;});
+drawPad();
+
 state();
 </script>
 </body>
