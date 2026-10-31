@@ -108,6 +108,11 @@ verify host="":
        curl -s -o /dev/null -w "detector / %{http_code}\n" http://127.0.0.1:8080/; \
        DISPLAY=:0 XAUTHORITY=/home/radxa/.Xauthority xrandr | head -2'
 
+# point chrony at the LAN NTP server on a running board (disables timesyncd)
+timesync role="left" host="":
+    chmod +x deploy/timesync.sh deploy/setup-timesync.sh
+    deploy/timesync.sh {{role}} "{{host}}"
+
 # camera stream check from the board that runs the detector
 verify-camera host="":
     @set -euo pipefail; \
