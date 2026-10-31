@@ -216,7 +216,7 @@ fn draw_mapping(img: &mut RgbImage, cfg: &crate::coordinate::CoordinateMapConfig
     // Eye-space panel bottom-left: [-1,1]^2 with centre cross and current point.
     let size = 64i32;
     let (w, h) = (img.width() as i32, img.height() as i32);
-    let (x0, y0) = (2, h - size - 2);
+    let (x0, y0) = (w - size - 2, 2);
     for yy in y0..y0 + size {
         for xx in x0..x0 + size {
             if xx > 0 && yy > 0 && (xx as u32) < img.width() && (yy as u32) < img.height() {
@@ -342,7 +342,7 @@ fn annotate(
         let lines = [
             format!("{:>8}  t={:>7.1}s", local_hms(), info.t_ms / 1000.0),
             format!(
-                "cam {:>5.1}fps {:>6}ms r{:<3} cl{:<3} m{}",
+                "cam {:>4.1}f {:>5}ms r{:<2} c{:<2} m{}",
                 info.camera_fps,
                 info.camera_age_ms as i64,
                 info.camera_restarts,
